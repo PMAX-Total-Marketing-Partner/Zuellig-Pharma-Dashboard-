@@ -115,9 +115,28 @@ def load_kpi():
             a['click']  += to_num(rec.get('KPI_Click'))
     return list(agg.values())
 
+# ── Độ phủ tệp: đọc tab "Reach" (Audience | Pool | Unique Reach) ──────────────
+def load_pool():
+    p = os.path.join(SHEET_DIR, 'Reach.csv')
+    rows = []
+    if os.path.exists(p):
+        with open(p, encoding='utf-8-sig', newline='') as f:
+            data = list(csv.reader(f))
+        for r in data[1:]:                      # bỏ header
+            if not r or not (r[0] or '').strip():
+                continue
+            rows.append({'name': r[0].strip(),
+                         'pool': to_num(r[1]) if len(r) > 1 else 0,
+                         'reach': to_num(r[2]) if len(r) > 2 else 0})
+    if not rows:                                # fallback nếu chưa tải tab Reach
+        rows = [{'name': 'Mẹ có con 0–15 tuổi', 'pool': 20250000, 'reach': 0},
+                {'name': 'Mẹ có con 0–2 tuổi', 'pool': 13800000, 'reach': 0}]
+    return rows
+
 def main():
     paxy = load_paxy()
     kpi = load_kpi()
+    pool = load_pool()
     dates = sorted({r['date'] for r in paxy})
     meta = {
         'cpmReach': CPM_REACH, 'cpcTraffic': CPC_TRAFFIC,
@@ -142,6 +161,7 @@ def main():
     html = html.replace('__DATA_JSON__', json.dumps(paxy, ensure_ascii=False))
     html = html.replace('__KPI_JSON__', json.dumps(kpi, ensure_ascii=False))
     html = html.replace('__META_JSON__', json.dumps(meta, ensure_ascii=False))
+    html = html.replace('__POOL_JSON__', json.dumps(pool, ensure_ascii=False))
     html = html.replace('__DATA_URL__', data_url.replace('"', '%22'))
     html = html.replace('__GENERATED__', gen)
 
@@ -311,6 +331,8 @@ TEMPLATE = r'''<!doctype html>
 
   /* funnel + donut */
   .mini-h{font-size:14px;font-weight:800;margin-bottom:14px}
+  .pool-grid{display:grid;grid-template-columns:repeat(2,1fr);gap:16px}
+  @media(max-width:820px){.pool-grid{grid-template-columns:1fr}}
   .fn-row{margin:0 0 13px}
   .fn-lab{font-size:12.5px;font-weight:700;color:var(--zp-charcoal);margin-bottom:4px}
   .fn-barwrap{display:flex;align-items:center;gap:10px}
@@ -363,16 +385,19 @@ TEMPLATE = r'''<!doctype html>
     <div class="card pad"><div class="defs-top">
       <div class="def"><div class="de">👀</div><div>
         <h4>Lượt hiển thị <small>(Impression)</small></h4>
-        <p>Số lần quảng cáo <b>xuất hiện trên màn hình</b> của mọi người. Cùng 1 người lướt thấy 3 lần thì tính 3 lượt — nên đây là số <b>lần hiện ra</b>, chưa phải số người.</p></div></div>
+        <p>Số lần quảng cáo <b>xuất hiện trên màn hình</b> của user. Cùng 1 user lướt thấy 3 lần thì tính 3 lượt — nên đây là số <b>lần hiện ra</b>, chưa phải số người.</p></div></div>
+      <div class="def"><div class="de">👥</div><div>
+        <h4>Độ phủ <small>(Reach)</small></h4>
+        <p>Số <b>tài khoản Meta (người thật)</b> đã thấy quảng cáo ít nhất 1 lần. Khác Lượt hiển thị: 1 user xem nhiều lần thì Reach vẫn chỉ tính <b>1</b>.</p></div></div>
       <div class="def"><div class="de">❤️</div><div>
         <h4>Lượt tương tác <small>(Engagement)</small></h4>
-        <p>Tổng các hành động người ta làm với quảng cáo: thả cảm xúc, chia sẻ, lưu, bình luận, xem video 3 giây, xem ảnh, bấm link, bấm vào trang / theo dõi… — mọi lần ai đó "động tay" vào bài.</p></div></div>
+        <p>Tổng các hành động user làm với quảng cáo: thả cảm xúc, chia sẻ, lưu, bình luận, xem video 3 giây, xem ảnh, bấm link, bấm vào trang / theo dõi… — mọi lần user "động tay" vào bài.</p></div></div>
       <div class="def"><div class="de">▶️</div><div>
         <h4>Lượt xem video <small>(View)</small></h4>
         <p>Số lần video được xem đủ lâu (từ 15 giây) — bao nhiêu người chịu dừng lại xem video của mình.</p></div></div>
       <div class="def"><div class="de">👆</div><div>
         <h4>Lượt bấm link <small>(Link Click)</small></h4>
-        <p>Số lần người ta bấm vào <b>link trong bài</b> để tới trang đích. Lưu ý: giai đoạn này <b>chưa chạy quảng cáo kéo click (Traffic)</b>, nên các click này là do người xem <b>tự bấm link ngay trong bài</b> nhận biết.</p></div></div>
+        <p>Số lần user bấm vào <b>link trong bài</b> để tới trang đích. Lưu ý: giai đoạn này <b>chưa chạy quảng cáo kéo click (Traffic)</b>, nên các click này là do user <b>tự bấm link ngay trong bài</b> nhận biết.</p></div></div>
       <div class="def"><div class="de">💰</div><div>
         <h4>Chi phí <small>(Spending)</small></h4>
         <p>Số tiền đã dùng để chạy quảng cáo cho tới lúc này.</p></div></div>
@@ -380,6 +405,13 @@ TEMPLATE = r'''<!doctype html>
         <h4>Mục tiêu & Đúng tiến độ</h4>
         <p>"Mục tiêu" là con số hứa đạt cho cả chiến dịch. Mới chạy được một phần thời gian mà kết quả đã vượt phần đó → nghĩa là đang <b>chạy nhanh hơn dự kiến</b>, rất tốt.</p></div></div>
     </div></div>
+  </div>
+
+  <!-- Độ phủ tệp: Unique Reach vs Pool size -->
+  <div class="section">
+    <div class="section-h"><div class="n">◑</div><h2>Độ phủ tệp mục tiêu — Reach / Pool size</h2>
+      <span class="hint">Pool size cố định · Unique reach điền tay · %Reach tự tính</span></div>
+    <div class="pool-grid" id="poolWrap"></div>
   </div>
 
   <!-- Tổng quan: chiến dịch đang tốt -->
@@ -463,6 +495,10 @@ TEMPLATE = r'''<!doctype html>
    Ví dụ: https://docs.google.com/spreadsheets/d/e/2PACX-xxxx/pub?gid=425474049&single=true&output=csv */
 const DATA_URL = "__DATA_URL__";   // "" = dùng snapshot nhúng sẵn (set trong dashboard_config.json)
 const AUTO_REFRESH_MIN = 10;   // phút; 0 = tắt auto refresh
+
+/* ĐỘ PHỦ TỆP — pool + reach ĐỌC TỰ ĐỘNG từ tab "Reach" trong Google Sheet.
+   Anh chỉ cần điền cột "Unique Reach" trong tab Reach → robot tự cập nhật %Reach. */
+const POOL_REACH = __POOL_JSON__;
 /* =============================================================== */
 
 const SNAP = __DATA_JSON__;
@@ -539,6 +575,7 @@ function render(){
   renderTrend(rows, kAll.impr/FLIGHT_TOTAL);
   renderFunnel(act);
   renderDonut(rows);
+  renderPool();
   renderOverview(rows);
   renderAudience(rows);
   renderDeep(rows);
@@ -784,6 +821,34 @@ function renderDonut(rows){
     </svg><div class="donut-legend">${leg}</div></div>`;
 }
 
+/* ---- Độ phủ tệp: donut Unique Reach / Pool size (config POOL_REACH, reach điền tay) ---- */
+function renderPool(){
+  const el=document.getElementById('poolWrap'); if(!el) return;
+  const R=52, C=2*Math.PI*R;
+  el.innerHTML = (POOL_REACH||[]).map(p=>{
+    const has=(+p.reach||0)>0;
+    const pct = p.pool>0 ? clamp01((+p.reach||0)/p.pool) : 0;
+    const len=pct*C;
+    const ring = has ? `<circle cx="70" cy="70" r="52" fill="none" stroke="#6C8CC7" stroke-width="16" stroke-dasharray="${len} ${C-len}" transform="rotate(-90 70 70)" stroke-linecap="round"/>` : '';
+    return `<div class="card pad">
+      <div class="mini-h">${p.name}</div>
+      <div class="donut-flex" style="align-items:center">
+        <svg viewBox="0 0 140 140" width="130" height="130" style="flex:0 0 auto">
+          <circle cx="70" cy="70" r="52" fill="none" stroke="#E7ECF5" stroke-width="16"/>${ring}
+          <text x="70" y="66" text-anchor="middle" font-size="23" font-weight="800" fill="#2E343A">${has?fmtPct(pct,1):'—'}</text>
+          <text x="70" y="88" text-anchor="middle" font-size="11" fill="#6E7683">%Reach pool</text>
+        </svg>
+        <div style="font-size:13px;line-height:2.1">
+          <div>Pool size: <b>${fmtInt(p.pool)}</b> người</div>
+          <div>Unique reach: <b>${has?fmtInt(p.reach):'chưa điền'}</b></div>
+          <div>%Reach pool: <b style="color:var(--zp-red)">${has?fmtPct(pct,1):'—'}</b></div>
+        </div>
+      </div>
+      ${has?'':'<div class="fn-sub" style="margin-top:8px">→ Điền Unique Reach (từ Meta) để hiện %.</div>'}
+    </div>`;
+  }).join('');
+}
+
 /* ============================ NHẬN XÉT + NEXT ACTION ============================ */
 const PILLAR_VN={'KNOW THE RISK':'Nhận biết nguy cơ bệnh','PROTECT ON TIME':'Bảo vệ con đúng lúc','CLOSE THE GAP':'Tiêm nhắc đúng lịch'};
 const assetVN=a=>a;   // giữ tên gốc asset (Master Video, KV, Event…) — KHÔNG dịch sang TV
@@ -851,79 +916,4 @@ function parseCSV(text){
   const rows=[]; let i=0,f='',row=[],q=false;
   while(i<text.length){const c=text[i];
     if(q){ if(c==='"'){ if(text[i+1]==='"'){f+='"';i++;}else q=false;} else f+=c; }
-    else{ if(c==='"')q=true; else if(c===','){row.push(f);f='';} else if(c==='\n'){row.push(f);rows.push(row);row=[];f='';} else if(c==='\r'){} else f+=c; }
-    i++;}
-  if(f.length||row.length){row.push(f);rows.push(row);}
-  return rows;
-}
-function normAsset(a){a=(a||'').trim();const m={'animation video':'Animation Video','master video':'Master Video','expert video':'Expert Video','event':'Event','kv':'KV','social':'Social'};return m[a.toLowerCase()]||a;}
-function isoDate(s){s=(s||'').trim();if(!s)return null;
-  if(s.includes('-')&&s.length>=8){const p=s.slice(0,10);if(/^\d{4}-\d{2}-\d{2}$/.test(p))return p;}
-  if(s.includes('/')){const[m,d,y]=s.split('/');if(y)return `${(+y).toString().padStart(4,'0')}-${(+m).toString().padStart(2,'0')}-${(+d).toString().padStart(2,'0')}`;}
-  return null;}
-function toNum(x){if(x==null)return 0;const s=(''+x).trim().replace(/,/g,'');if(!s||s.toUpperCase()==='#N/A')return 0;const n=+s;return isFinite(n)?n:0;}
-
-function rowsFromCSV(text){
-  const g=parseCSV(text); if(!g.length)return[];
-  const head=g[0].map(h=>(h||'').trim());
-  const idx=n=>head.indexOf(n);
-  const iDate=idx('Date'),iCh=idx('Channel'),iObj=idx('Objective'),iPil=idx('Pillar'),
-        iAs=idx('Asset'),iAud=idx('Audience'),iImp=idx('Impression'),iEng=idx('Engagement'),
-        iView=idx('FB Thruplay Action'),iClk=idx('Link click');
-  const out=[];
-  for(let r=1;r<g.length;r++){const row=g[r];
-    const d=isoDate(row[iDate]); const ch=(row[iCh]||'').trim(); const obj=(row[iObj]||'').trim();
-    if(!d||ch!=='Facebook'||(obj!=='Reach'&&obj!=='Traffic'))continue;
-    out.push({date:d,obj,pillar:(row[iPil]||'').trim()||'(n/a)',asset:normAsset(row[iAs]),
-      aud:(row[iAud]||'').trim()||'(n/a)',impr:toNum(row[iImp]),eng:toNum(row[iEng]),
-      view:toNum(row[iView]),click:toNum(row[iClk])});
-  }
-  return out;
-}
-
-function setLive(isLive, note){
-  document.getElementById('liveDot').className='dot'+(isLive?'':' snap');
-  document.getElementById('liveText').textContent=isLive?'LIVE':'Snapshot';
-  document.getElementById('footNote').innerHTML = note;
-}
-async function loadLive(){
-  const banner=document.getElementById('banner');
-  if(!DATA_URL){
-    ROWS=SNAP.slice();
-    setLive(false, `Số liệu cập nhật lúc ${GENERATED}`);
-    banner.style.display='none';
-    render(); return;
-  }
-  try{
-    const res=await fetch(DATA_URL+(DATA_URL.includes('?')?'&':'?')+'_t='+Date.now());
-    if(!res.ok) throw new Error('HTTP '+res.status);
-    const txt=await res.text();
-    const rows=rowsFromCSV(txt);
-    if(!rows.length) throw new Error('CSV rỗng/không đọc được cột');
-    ROWS=rows; banner.style.display='none';
-    setLive(true, `Nguồn: LIVE từ Google Sheet (FB_Paxy) · cập nhật lúc ${new Date().toLocaleString('vi-VN')}`);
-    render();
-  }catch(e){
-    ROWS=SNAP.slice();
-    setLive(false, `Snapshot dự phòng · ${GENERATED}`);
-    banner.style.display='block';
-    banner.textContent='⚠ Không fetch được dữ liệu LIVE ('+e.message+'). Đang dùng snapshot. Kiểm tra lại link publish của tab FB_Paxy.';
-    render();
-  }
-}
-
-document.getElementById('rangeSel').addEventListener('change', ()=>{
-  document.getElementById('fromDate').value=''; document.getElementById('toDate').value=''; render();
-});
-document.getElementById('fromDate').addEventListener('change', render);
-document.getElementById('toDate').addEventListener('change', render);
-document.getElementById('refreshBtn').addEventListener('click', loadLive);
-loadLive();
-if(AUTO_REFRESH_MIN>0 && DATA_URL) setInterval(loadLive, AUTO_REFRESH_MIN*60000);
-</script>
-</body>
-</html>
-'''
-
-if __name__ == '__main__':
-    main()
+    else{ if(c==='"')q=true; else if(c===','){row.push(f);f='';} else if(c==='\n'){row.push(f);rows.push(row);row=[];f='';} else if
