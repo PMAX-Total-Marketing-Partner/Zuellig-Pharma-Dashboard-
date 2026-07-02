@@ -1,0 +1,4 @@
+__pycache__/
+*.pyc
+_localtest_*.html
+.DS_Store
