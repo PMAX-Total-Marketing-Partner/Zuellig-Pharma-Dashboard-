@@ -35,6 +35,7 @@ def creds_from_env():
         info.setdefault('client_secret', c.get('client_secret'))
         info.setdefault('token_uri', c.get('token_uri', 'https://oauth2.googleapis.com/token'))
     info.setdefault('token_uri', 'https://oauth2.googleapis.com/token')
+    # dùng đúng scope đã được cấp trong token (tránh invalid_scope khi refresh)
     creds = Credentials.from_authorized_user_info(info, info.get('scopes'))
     if not creds.valid:
         creds.refresh(Request())
@@ -91,10 +92,27 @@ def load_kpi(svc):
     return list(agg.values())
 
 
+def load_pool(svc):
+    vals = svc.spreadsheets().values().get(
+        spreadsheetId=SHEET_ID, range='Reach!A1:C50').execute().get('values', [])
+    rows = []
+    for r in vals[1:]:
+        if not r or not (r[0] or '').strip():
+            continue
+        rows.append({'name': r[0].strip(),
+                     'pool': bd.to_num(r[1]) if len(r) > 1 else 0,
+                     'reach': bd.to_num(r[2]) if len(r) > 2 else 0})
+    if not rows:
+        rows = [{'name': 'Mẹ có con 0–15 tuổi', 'pool': 20250000, 'reach': 0},
+                {'name': 'Mẹ có con 0–2 tuổi', 'pool': 13800000, 'reach': 0}]
+    return rows
+
+
 def main():
     svc = gbuild('sheets', 'v4', credentials=creds_from_env())
     paxy = load_paxy(svc)
     kpi = load_kpi(svc)
+    pool = load_pool(svc)
     dates = sorted({r['date'] for r in paxy})
     meta = {'cpmReach': bd.CPM_REACH, 'cpcTraffic': bd.CPC_TRAFFIC,
             'campaignStart': bd.CAMPAIGN_START, 'campaignEnd': bd.CAMPAIGN_END,
@@ -107,6 +125,7 @@ def main():
     html = html.replace('__DATA_JSON__', json.dumps(paxy, ensure_ascii=False))
     html = html.replace('__KPI_JSON__', json.dumps(kpi, ensure_ascii=False))
     html = html.replace('__META_JSON__', json.dumps(meta, ensure_ascii=False))
+    html = html.replace('__POOL_JSON__', json.dumps(pool, ensure_ascii=False))
     html = html.replace('__DATA_URL__', '')     # bản CI = bake snapshot mỗi lần chạy (không cần live-fetch)
     html = html.replace('__GENERATED__', gen)
 
