@@ -891,7 +891,7 @@ async function loadLive(){
   const banner=document.getElementById('banner');
   if(!DATA_URL){
     ROWS=SNAP.slice();
-    setLive(false, `Nguồn: snapshot nhúng lúc build · ${GENERATED}. &nbsp;Bật LIVE bằng cách publish tab FB_Paxy rồi dán link vào DATA_URL.`);
+    setLive(false, `Nguồn: snapshot nhúng lúc build · ${GENERATED}. &nbsp;`);
     banner.style.display='none';
     render(); return;
   }
