@@ -916,4 +916,79 @@ function parseCSV(text){
   const rows=[]; let i=0,f='',row=[],q=false;
   while(i<text.length){const c=text[i];
     if(q){ if(c==='"'){ if(text[i+1]==='"'){f+='"';i++;}else q=false;} else f+=c; }
-    else{ if(c==='"')q=true; else if(c===','){row.push(f);f='';} else if(c==='\n'){row.push(f);rows.push(row);row=[];f='';} else if
+    else{ if(c==='"')q=true; else if(c===','){row.push(f);f='';} else if(c==='\n'){row.push(f);rows.push(row);row=[];f='';} else if(c==='\r'){} else f+=c; }
+    i++;}
+  if(f.length||row.length){row.push(f);rows.push(row);}
+  return rows;
+}
+function normAsset(a){a=(a||'').trim();const m={'animation video':'Animation Video','master video':'Master Video','expert video':'Expert Video','event':'Event','kv':'KV','social':'Social'};return m[a.toLowerCase()]||a;}
+function isoDate(s){s=(s||'').trim();if(!s)return null;
+  if(s.includes('-')&&s.length>=8){const p=s.slice(0,10);if(/^\d{4}-\d{2}-\d{2}$/.test(p))return p;}
+  if(s.includes('/')){const[m,d,y]=s.split('/');if(y)return `${(+y).toString().padStart(4,'0')}-${(+m).toString().padStart(2,'0')}-${(+d).toString().padStart(2,'0')}`;}
+  return null;}
+function toNum(x){if(x==null)return 0;const s=(''+x).trim().replace(/,/g,'');if(!s||s.toUpperCase()==='#N/A')return 0;const n=+s;return isFinite(n)?n:0;}
+
+function rowsFromCSV(text){
+  const g=parseCSV(text); if(!g.length)return[];
+  const head=g[0].map(h=>(h||'').trim());
+  const idx=n=>head.indexOf(n);
+  const iDate=idx('Date'),iCh=idx('Channel'),iObj=idx('Objective'),iPil=idx('Pillar'),
+        iAs=idx('Asset'),iAud=idx('Audience'),iImp=idx('Impression'),iEng=idx('Engagement'),
+        iView=idx('FB Thruplay Action'),iClk=idx('Link click');
+  const out=[];
+  for(let r=1;r<g.length;r++){const row=g[r];
+    const d=isoDate(row[iDate]); const ch=(row[iCh]||'').trim(); const obj=(row[iObj]||'').trim();
+    if(!d||ch!=='Facebook'||(obj!=='Reach'&&obj!=='Traffic'))continue;
+    out.push({date:d,obj,pillar:(row[iPil]||'').trim()||'(n/a)',asset:normAsset(row[iAs]),
+      aud:(row[iAud]||'').trim()||'(n/a)',impr:toNum(row[iImp]),eng:toNum(row[iEng]),
+      view:toNum(row[iView]),click:toNum(row[iClk])});
+  }
+  return out;
+}
+
+function setLive(isLive, note){
+  document.getElementById('liveDot').className='dot'+(isLive?'':' snap');
+  document.getElementById('liveText').textContent=isLive?'LIVE':'Snapshot';
+  document.getElementById('footNote').innerHTML = note;
+}
+async function loadLive(){
+  const banner=document.getElementById('banner');
+  if(!DATA_URL){
+    ROWS=SNAP.slice();
+    setLive(false, `Số liệu cập nhật lúc ${GENERATED}`);
+    banner.style.display='none';
+    render(); return;
+  }
+  try{
+    const res=await fetch(DATA_URL+(DATA_URL.includes('?')?'&':'?')+'_t='+Date.now());
+    if(!res.ok) throw new Error('HTTP '+res.status);
+    const txt=await res.text();
+    const rows=rowsFromCSV(txt);
+    if(!rows.length) throw new Error('CSV rỗng/không đọc được cột');
+    ROWS=rows; banner.style.display='none';
+    setLive(true, `Nguồn: LIVE từ Google Sheet (FB_Paxy) · cập nhật lúc ${new Date().toLocaleString('vi-VN')}`);
+    render();
+  }catch(e){
+    ROWS=SNAP.slice();
+    setLive(false, `Snapshot dự phòng · ${GENERATED}`);
+    banner.style.display='block';
+    banner.textContent='⚠ Không fetch được dữ liệu LIVE ('+e.message+'). Đang dùng snapshot. Kiểm tra lại link publish của tab FB_Paxy.';
+    render();
+  }
+}
+
+document.getElementById('rangeSel').addEventListener('change', ()=>{
+  document.getElementById('fromDate').value=''; document.getElementById('toDate').value=''; render();
+});
+document.getElementById('fromDate').addEventListener('change', render);
+document.getElementById('toDate').addEventListener('change', render);
+document.getElementById('refreshBtn').addEventListener('click', loadLive);
+loadLive();
+if(AUTO_REFRESH_MIN>0 && DATA_URL) setInterval(loadLive, AUTO_REFRESH_MIN*60000);
+</script>
+</body>
+</html>
+'''
+
+if __name__ == '__main__':
+    main()
