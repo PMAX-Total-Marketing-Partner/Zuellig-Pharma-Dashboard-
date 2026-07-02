@@ -35,7 +35,7 @@ def creds_from_env():
         info.setdefault('client_secret', c.get('client_secret'))
         info.setdefault('token_uri', c.get('token_uri', 'https://oauth2.googleapis.com/token'))
     info.setdefault('token_uri', 'https://oauth2.googleapis.com/token')
-    creds = Credentials.from_authorized_user_info(info, SCOPES)
+    creds = Credentials.from_authorized_user_info(info, info.get('scopes'))
     if not creds.valid:
         creds.refresh(Request())
     return creds
