@@ -10,9 +10,21 @@ ENV cần:
   ZP_SHEET_ID    = (tuỳ chọn) id sheet, mặc định = sheet EXT Zuellig
   ZP_OUT         = (tuỳ chọn) file output, mặc định docs/index.html
 """
-import os, sys, io, json, datetime
+import os, sys, io, json, datetime, time, socket
 if hasattr(sys.stdout, 'reconfigure'):
     sys.stdout.reconfigure(encoding='utf-8')
+socket.setdefaulttimeout(90)   # tránh treo request; kết hợp with_retry chống timeout mạng
+
+def with_retry(fn, tries=4, delay=8):
+    """Thử lại khi mạng chập chờn (TimeoutError / lỗi tạm thời khi gọi Google API)."""
+    for i in range(tries):
+        try:
+            return fn()
+        except Exception as e:
+            if i == tries - 1:
+                raise
+            print(f'[retry {i+1}/{tries}] {type(e).__name__}: {e}', flush=True)
+            time.sleep(delay)
 
 from google.oauth2.credentials import Credentials
 from google.auth.transport.requests import Request
@@ -109,10 +121,10 @@ def load_pool(svc):
 
 
 def main():
-    svc = gbuild('sheets', 'v4', credentials=creds_from_env())
-    paxy = load_paxy(svc)
-    kpi = load_kpi(svc)
-    pool = load_pool(svc)
+    def _fetch():
+        svc = gbuild('sheets', 'v4', credentials=creds_from_env())
+        return svc, load_paxy(svc), load_kpi(svc), load_pool(svc)
+    svc, paxy, kpi, pool = with_retry(_fetch)
     dates = sorted({r['date'] for r in paxy})
     meta = {'cpmReach': bd.CPM_REACH, 'cpcTraffic': bd.CPC_TRAFFIC,
             'campaignStart': bd.CAMPAIGN_START, 'campaignEnd': bd.CAMPAIGN_END,
