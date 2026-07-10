@@ -136,7 +136,8 @@ def load_report(svc):
     r3 = rd("'Raw Data Report (3)'!A1:J300")
     r4 = rd("'Raw Data Report (4)'!A1:J300")
     r5 = rd("'Raw Data Report (5)'!A1:J300")
-    return bd.aggregate_report(r3, r4, r5)
+    rweek = rd("'Freq by week'!A1:Z200")   # tab tần suất theo tuần (nếu có) → chart; thiếu tab thì rd() trả []
+    return bd.aggregate_report(r3, r4, r5, rweek)
 
 
 def main():

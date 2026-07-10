@@ -139,7 +139,40 @@ def load_pool():
 # 3 tab export gốc từ Meta Ads Manager (dán tay vào sheet INT). Cột chung:
 #   <dimension> | Reach | Impressions | Frequency | Post engagements | ThruPlays | Clicks (all) | Reporting starts | Reporting ends
 # LƯU Ý: Reach chỉ cộng được trong chiều LOẠI TRỪ nhau (tỉnh, tuổi); KHÔNG cộng theo placement.
-def aggregate_report(r3, r4, r5):
+def parse_weekly(rows):
+    """Chuỗi tần suất theo tuần từ tab 'Freq by week' (Meta breakdown By Time → Week).
+    Dò cột linh hoạt: 1 cột tuần/ngày + Reach + Impressions (+ Frequency nếu có).
+    Bỏ dòng tổng ('Total'/'Tổng'). Giữ thứ tự xuất hiện (Meta export vốn theo thời gian)."""
+    if not rows:
+        return []
+    headers = list(rows[0].keys())
+    def find(*subs):
+        for h in headers:
+            hl = (h or '').lower()
+            if any(s in hl for s in subs):
+                return h
+        return None
+    c_week  = find('week', 'tuần') or find('reporting start', 'date', 'ngày') or headers[0]
+    c_reach = find('reach')
+    c_impr  = find('impress')
+    c_freq  = find('freq')
+    out = []
+    for r in rows:
+        wk = str(r.get(c_week, '') or '').strip()
+        if not wk or wk.lower().startswith(('total', 'tổng', 'grand')):
+            continue
+        reach = to_num(r.get(c_reach)) if c_reach else 0.0
+        impr  = to_num(r.get(c_impr)) if c_impr else 0.0
+        freq  = to_num(r.get(c_freq)) if c_freq else 0.0
+        if not freq and reach:
+            freq = impr / reach
+        if reach == 0 and impr == 0 and freq == 0:
+            continue
+        out.append({'week': wk, 'reach': reach, 'impr': impr, 'freq': round(freq, 4)})
+    return out
+
+
+def aggregate_report(r3, r4, r5, rweek=None):
     def agg(rows, keycol):
         d = {}
         for r in rows:
@@ -167,6 +200,7 @@ def aggregate_report(r3, r4, r5):
     return {
         'window': {'start': ws, 'end': we},
         'region': region, 'placement': placement, 'age': age,
+        'weekly': parse_weekly(rweek),
         'totals': {'impr': tot_impr, 'reachAge': reach_age, 'reachRegion': reach_region,
                    'eng': sum(a['eng'] for a in age), 'clk': sum(a['clk'] for a in age),
                    'freq': (tot_impr / reach_age) if reach_age else 0},
@@ -182,7 +216,8 @@ def load_report():
             return list(csv.DictReader(f))
     return aggregate_report(rd('Raw_Data_Report_3.csv'),
                             rd('Raw_Data_Report_4.csv'),
-                            rd('Raw_Data_Report_5.csv'))
+                            rd('Raw_Data_Report_5.csv'),
+                            rd('Freq_by_week.csv'))   # tab 'Freq by week' (nếu có) → chart tần suất theo tuần
 
 def main():
     paxy = load_paxy()
@@ -420,6 +455,7 @@ TEMPLATE = r'''<!doctype html>
                 font-weight:800;font-size:12px;padding:6px 13px;border-radius:999px}
   .freq-big{font-size:44px;font-weight:800;letter-spacing:-1px;color:var(--brand-blue-deep);line-height:1.05}
   .freq-unit{font-size:15px;font-weight:700;color:var(--muted)}
+  svg.freqchart{display:block;width:100%;min-width:440px;height:210px}
 </style>
 </head>
 <body>
@@ -619,6 +655,7 @@ const T = {
   repPlaceNote:'Reels gánh phần lớn lượt hiển thị (đẩy reach), Feed mang lại tương tác cao nhất. (Chia theo lượt hiển thị vì 1 người có thể thấy ở nhiều vị trí.)',
   repFreqNote:'Mỗi người tiếp cận nhìn thấy IMOJEV trung bình bằng đây lần. Tần suất còn thấp = đang phủ RỘNG người mới, chưa "bội thực" quảng cáo — còn nhiều dư địa nhắc lại ở giai đoạn sau.',
   repFreqUnit:'lần / người', freqOverall:'Tần suất trung bình',
+  freqLeg:'Tần suất / tuần', freqChartCap:'Tần suất trung bình toàn kỳ',
  },
  en:{
   title:'IMOJEV — Facebook Performance Dashboard', sub:'Zuellig Pharma · IMOJEV campaign · Flight', refresh:'Refresh', langBtn:'VI',
@@ -648,6 +685,7 @@ const T = {
   repPlaceNote:'Reels drives most impressions (pushing reach), Feed delivers the highest engagement. (Split by impressions since one person can be reached across placements.)',
   repFreqNote:'On average each reached person saw IMOJEV this many times. Low frequency = we are reaching BROAD new people, not over-serving ads — plenty of room to reinforce later.',
   repFreqUnit:'times / person', freqOverall:'Average frequency',
+  freqLeg:'Frequency / week', freqChartCap:'Average frequency to date',
  }
 };
 function tt(k){ return (T[L] && T[L][k]!=null) ? T[L][k] : (T.vi[k]!=null?T.vi[k]:k); }
@@ -1063,15 +1101,54 @@ function renderReport(){
   renderReportDonut('repPlace', (REPORT.placement||[]).filter(x=>x.impr>0), x=>x.impr, x=>x.name);
   document.getElementById('repPlaceNote').textContent = tt('repPlaceNote');
 
-  // C) Frequency (full-width)
+  // C) Frequency (full-width) — line chart theo tuần nếu có tab 'Freq by week', else số tổng
   const f=(REPORT.totals&&REPORT.totals.freq)||0;
-  document.getElementById('repFreq').innerHTML =
-    `<div style="display:flex;align-items:center;gap:24px;flex-wrap:wrap">
+  const fTxt=f.toLocaleString(_loc(),{minimumFractionDigits:2,maximumFractionDigits:2});
+  const wk=(REPORT.weekly||[]).filter(w=>(+w.freq||0)>0);
+  const el=document.getElementById('repFreq');
+  if(wk.length>=2){
+    el.innerHTML=`<div class="chart-wrap"><svg class="freqchart" id="freqChart"></svg></div>
+      <div class="legend"><span><i style="background:#4E6BAE"></i> ${tt('freqLeg')}</span></div>
+      <div class="rep-note" style="margin-top:8px">${tt('freqChartCap')}: <b>${fTxt} ${tt('repFreqUnit')}</b>. ${tt('repFreqNote')}</div>`;
+    drawFreqChart(wk);
+  } else {
+    el.innerHTML=`<div style="display:flex;align-items:center;gap:24px;flex-wrap:wrap">
        <div style="display:flex;align-items:baseline;gap:10px;flex:0 0 auto">
-         <span class="freq-big">${f.toLocaleString(_loc(),{minimumFractionDigits:1,maximumFractionDigits:1})}</span>
+         <span class="freq-big">${fTxt}</span>
          <span class="freq-unit">${tt('repFreqUnit')}</span></div>
        <div class="rep-note" style="flex:1;min-width:240px;margin-top:0">${tt('repFreqNote')}</div>
      </div>`;
+  }
+}
+function weekLabel(w){
+  const s=String(w).trim();
+  const m=s.match(/(\d{4})-(\d{2})-(\d{2})/);            // ISO hoặc range "2026-06-14 - ..."
+  if(m) return `${m[3]}/${m[2]}`;
+  const m2=s.match(/(\d{1,2})[\/\-](\d{1,2})/);
+  if(m2) return `${m2[1]}/${m2[2]}`;
+  return s.length>9 ? s.slice(0,9) : s;
+}
+function drawFreqChart(wk){
+  const svg=document.getElementById('freqChart'); if(!svg) return;
+  const W=1000,H=210,PL=44,PR=22,PT=22,PB=34;
+  const vals=wk.map(w=>+w.freq||0);
+  const maxV=Math.max(...vals,1.2)*1.15;
+  const x=i=>PL+(wk.length===1?(W-PL-PR)/2:i*(W-PL-PR)/(wk.length-1));
+  const y=v=>H-PB-(v/maxV)*(H-PT-PB);
+  const f1=v=>v.toLocaleString(_loc(),{minimumFractionDigits:1,maximumFractionDigits:1});
+  const f2=v=>v.toLocaleString(_loc(),{minimumFractionDigits:2,maximumFractionDigits:2});
+  let g='';
+  for(let i=0;i<=4;i++){const yy=PT+i*(H-PT-PB)/4;const val=maxV*(1-i/4);
+    g+=`<line x1="${PL}" y1="${yy}" x2="${W-PR}" y2="${yy}" stroke="#eee"/>`;
+    g+=`<text x="${PL-8}" y="${yy+4}" text-anchor="end" font-size="10" fill="#A39EA0">${f1(val)}</text>`;}
+  const pts=wk.map((w,i)=>`${x(i)},${y(vals[i])}`).join(' ');
+  g+=`<polyline points="${pts}" fill="none" stroke="#4E6BAE" stroke-width="2.8"/>`;
+  wk.forEach((w,i)=>{
+    g+=`<circle cx="${x(i)}" cy="${y(vals[i])}" r="3.6" fill="#4E6BAE"><title>${weekLabel(w.week)}: ${f2(vals[i])} ${tt('repFreqUnit')}</title></circle>`;
+    g+=`<text x="${x(i)}" y="${y(vals[i])-9}" text-anchor="middle" font-size="10.5" font-weight="800" fill="#4E6BAE">${f2(vals[i])}</text>`;
+    g+=`<text x="${x(i)}" y="${H-12}" text-anchor="middle" font-size="10" fill="#A39EA0">${weekLabel(w.week)}</text>`;});
+  svg.setAttribute('viewBox',`0 0 ${W} ${H}`);
+  svg.innerHTML=g;
 }
 function renderReportDonut(elId, entries, valFn, labFn){
   const el=document.getElementById(elId); if(!el) return;
@@ -1165,13 +1242,11 @@ function renderCommentary(rows, act, k){
   if(cmtRep && REPORT && REPORT.hasData){
     const topReg=(REPORT.region||[]).slice().sort((a,b)=>b.reach-a.reach)[0];
     const topPlc=(REPORT.placement||[]).slice().sort((a,b)=>b.impr-a.impr)[0];
-    const ages=(REPORT.age||[]).slice().sort((a,b)=>b.reach-a.reach);
-    const coreAge=ages.filter(a=>/25-34|35-44|45-54/.test(a.name)).reduce((s,a)=>s+a.reach,0);
-    const totAgeR=(REPORT.totals&&REPORT.totals.reachAge)||ages.reduce((s,a)=>s+a.reach,0)||1;
     const fr=(REPORT.totals&&REPORT.totals.freq)||0;
+    const frTxt=fr.toLocaleString(_loc(),{minimumFractionDigits:2,maximumFractionDigits:2});
     cmtRep.innerHTML = cmtBox(EN
-      ? `Reach is concentrated in <b>${topReg?regionName(topReg.name):'—'}</b> and other key cities, shown mostly via <b>${topPlc?topPlc.name:'—'}</b>. About <b>${fmtPct(coreAge/totAgeR,0)}</b> of the people reached are parents aged 25–54 — the core decision-makers for their child’s booster shot. Average frequency is still low (<b>${fr.toFixed(1)}×</b>), meaning the budget is buying <b>broad new reach</b> rather than repeating to the same people.`
-      : `Lượng tiếp cận tập trung ở <b>${topReg?regionName(topReg.name):'—'}</b> và các thành phố trọng điểm, hiển thị chủ yếu qua <b>${topPlc?topPlc.name:'—'}</b>. Khoảng <b>${fmtPct(coreAge/totAgeR,0)}</b> người được tiếp cận là phụ huynh 25–54 tuổi — đúng nhóm ra quyết định tiêm nhắc cho con. Tần suất còn thấp (<b>${fr.toFixed(1)} lần</b>), tức ngân sách đang mua <b>tiếp cận người mới trên diện rộng</b> chứ chưa lặp lại vào cùng một nhóm.`);
+      ? `Reach is concentrated in <b>${topReg?regionName(topReg.name):'—'}</b> and other key cities, shown mostly via <b>${topPlc?topPlc.name:'—'}</b>. Average frequency is still low (<b>${frTxt}×</b>), meaning the budget is buying <b>broad new reach</b> rather than repeating to the same people.`
+      : `Lượng tiếp cận tập trung ở <b>${topReg?regionName(topReg.name):'—'}</b> và các thành phố trọng điểm, hiển thị chủ yếu qua <b>${topPlc?topPlc.name:'—'}</b>. Tần suất còn thấp (<b>${frTxt} lần</b>), tức ngân sách đang mua <b>tiếp cận người mới trên diện rộng</b> chứ chưa lặp lại vào cùng một nhóm.`);
   } else if(cmtRep){ cmtRep.innerHTML=''; }
 }
 
