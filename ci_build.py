@@ -133,11 +133,19 @@ def load_report(svc):
         except Exception as e:
             print(f'[report] bỏ qua {rng}: {type(e).__name__}: {e}', flush=True)
             return []
+    def rd_grid(rng):                       # RAW values (list-of-lists) cho pivot Age+Gender
+        try:
+            return svc.spreadsheets().values().get(
+                spreadsheetId=INT_SHEET_ID, range=rng).execute().get('values', [])
+        except Exception as e:
+            print(f'[report] bỏ qua {rng}: {type(e).__name__}: {e}', flush=True)
+            return []
     r3 = rd("'Raw Data Report (3)'!A1:J300")
     r4 = rd("'Raw Data Report (4)'!A1:J300")
     r5 = rd("'Raw Data Report (5)'!A1:J300")
-    rweek = rd("'Freq by week'!A1:Z200")   # tab tần suất theo tuần (nếu có) → chart; thiếu tab thì rd() trả []
-    return bd.aggregate_report(r3, r4, r5, rweek)
+    rweek = rd("'Freq by week'!A1:Z200")        # tab tần suất theo tuần (nếu có) → chart; thiếu tab thì []
+    rag = rd_grid("'Age + Gender'!A1:Q40")      # pivot Age+Gender (nửa phải tab) → khối Age & Gender
+    return bd.aggregate_report(r3, r4, r5, rweek, rag)
 
 
 def main():

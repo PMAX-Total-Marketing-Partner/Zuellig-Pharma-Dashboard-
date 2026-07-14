@@ -172,7 +172,52 @@ def parse_weekly(rows):
     return out
 
 
-def aggregate_report(r3, r4, r5, rweek=None):
+def parse_agegender(grid):
+    """Đọc PIVOT Age & Gender (anh Hùng tự kéo ở nửa PHẢI tab 'Age + Gender').
+    Dò theo NHÃN: ô 'Age'/'Gender' mà ô kế bên phải là 'Impressions' → header pivot.
+    Cột pivot: [label | Impressions | Post engagements | View15s | %ER | %VR | CTR].
+    Không hardcode dòng/cột → anh nới dải tuổi / xê pivot vẫn chạy."""
+    if not grid:
+        return None
+    def read_block(hdr):
+        for row in grid:
+            for j, cell in enumerate(row):
+                if (str(cell).strip().lower() == hdr.lower()
+                        and j + 1 < len(row) and 'impress' in str(row[j + 1]).lower()):
+                    out, started = [], False
+                    for r in grid:
+                        lab = str(r[j]).strip() if j < len(r) else ''
+                        if not started:
+                            started = (r is row)   # bắt đầu đọc từ SAU dòng header
+                            continue
+                        if not lab:
+                            if out: break
+                            continue
+                        out.append({
+                            'label': lab,
+                            'impr': to_num(r[j + 1] if j + 1 < len(r) else 0),
+                            'eng':  to_num(r[j + 2] if j + 2 < len(r) else 0),
+                            'view': to_num(r[j + 3] if j + 3 < len(r) else 0),
+                            'er':   to_num(r[j + 4] if j + 4 < len(r) else 0),
+                            'vr':   to_num(r[j + 5] if j + 5 < len(r) else 0),
+                            'ctr':  to_num(r[j + 6] if j + 6 < len(r) else 0),
+                        })
+                        if lab.lower().startswith(('grand', 'tổng')):
+                            break
+                    return out
+        return []
+    def split(lst):
+        data = [e for e in lst if not e['label'].lower().startswith(('grand', 'tổng'))]
+        gt = next((e for e in lst if e['label'].lower().startswith(('grand', 'tổng'))), None)
+        return data, gt
+    age_d, age_gt = split(read_block('Age'))
+    gen_d, gen_gt = split(read_block('Gender'))
+    if not age_d and not gen_d:
+        return None
+    return {'age': age_d, 'gender': gen_d, 'grand': age_gt or gen_gt}
+
+
+def aggregate_report(r3, r4, r5, rweek=None, rag=None):
     def agg(rows, keycol):
         d = {}
         for r in rows:
@@ -201,6 +246,7 @@ def aggregate_report(r3, r4, r5, rweek=None):
         'window': {'start': ws, 'end': we},
         'region': region, 'placement': placement, 'age': age,
         'weekly': parse_weekly(rweek),
+        'ageGender': parse_agegender(rag),
         'totals': {'impr': tot_impr, 'reachAge': reach_age, 'reachRegion': reach_region,
                    'eng': sum(a['eng'] for a in age), 'clk': sum(a['clk'] for a in age),
                    'freq': (tot_impr / reach_age) if reach_age else 0},
@@ -214,10 +260,17 @@ def load_report():
             return []
         with open(p, encoding='utf-8-sig', newline='') as f:
             return list(csv.DictReader(f))
+    def rd_grid(name):                     # đọc RAW (list-of-lists) cho pivot Age+Gender
+        p = os.path.join(INT_DIR, name)
+        if not os.path.exists(p):
+            return []
+        with open(p, encoding='utf-8-sig', newline='') as f:
+            return list(csv.reader(f))
     return aggregate_report(rd('Raw_Data_Report_3.csv'),
                             rd('Raw_Data_Report_4.csv'),
                             rd('Raw_Data_Report_5.csv'),
-                            rd('Freq_by_week.csv'))   # tab 'Freq by week' (nếu có) → chart tần suất theo tuần
+                            rd('Freq_by_week.csv'),      # tab 'Freq by week' (nếu có) → chart tần suất theo tuần
+                            rd_grid('Age_Gender.csv'))   # tab 'Age + Gender' pivot → khối Age & Gender
 
 def main():
     paxy = load_paxy()
@@ -597,6 +650,17 @@ TEMPLATE = r'''<!doctype html>
       </div>
     </div>
     <div id="cmtReport"></div>
+    <div class="grid2" id="repAgeGenderWrap" style="margin-top:16px">
+      <div class="card pad">
+        <div class="mini-h" id="repByAge">Theo độ tuổi</div>
+        <div class="table-wrap"><table id="tblAge"></table></div>
+      </div>
+      <div class="card pad">
+        <div class="mini-h" id="repByGender">Theo giới tính</div>
+        <div class="table-wrap"><table id="tblGender"></table></div>
+      </div>
+    </div>
+    <div class="rep-note" id="agLegend" style="margin-top:8px"></div>
   </div>
 
   <footer>
@@ -656,6 +720,8 @@ const T = {
   repFreqNote:'Mỗi người tiếp cận nhìn thấy IMOJEV trung bình bằng đây lần. Tần suất còn thấp = đang phủ RỘNG người mới, chưa "bội thực" quảng cáo — còn nhiều dư địa nhắc lại ở giai đoạn sau.',
   repFreqUnit:'lần / người', freqOverall:'Tần suất trung bình',
   freqLeg:'Tần suất / tuần', freqChartCap:'Tần suất trung bình toàn kỳ',
+  repByAge:'Theo độ tuổi', repByGender:'Theo giới tính', agAge:'Độ tuổi', agGender:'Giới tính', agTotal:'Tổng',
+  agLegend:'%ER = tỷ lệ tương tác · %VR = tỷ lệ xem · CTR = tỷ lệ bấm (đều tính trên tổng hiển thị)',
  },
  en:{
   title:'IMOJEV — Facebook Performance Dashboard', sub:'Zuellig Pharma · IMOJEV campaign · Flight', refresh:'Refresh', langBtn:'VI',
@@ -686,6 +752,8 @@ const T = {
   repFreqNote:'On average each reached person saw IMOJEV this many times. Low frequency = we are reaching BROAD new people, not over-serving ads — plenty of room to reinforce later.',
   repFreqUnit:'times / person', freqOverall:'Average frequency',
   freqLeg:'Frequency / week', freqChartCap:'Average frequency to date',
+  repByAge:'By age', repByGender:'By gender', agAge:'Age', agGender:'Gender', agTotal:'Total',
+  agLegend:'%ER = engagement rate · %VR = view rate · CTR = click-through rate (all of impressions)',
  }
 };
 function tt(k){ return (T[L] && T[L][k]!=null) ? T[L][k] : (T.vi[k]!=null?T.vi[k]:k); }
@@ -710,7 +778,7 @@ function applyStatic(){
   S('hTitle',tt('title')); S('hSub',tt('sub')); S('refreshTxt',tt('refresh')); S('langBtn',tt('langBtn'));
   const rs=document.getElementById('rangeSel'); const rm={all:'rAll',l7d:'rL7d',l14d:'rL14d',mtd:'rMtd',today:'rToday'};
   if(rs)[...rs.options].forEach(o=>{if(rm[o.value])o.textContent=tt(rm[o.value]);});
-  ['defsH','defsHint','poolH','poolHint','trendH','legDaily','legCum','legIdeal','funnelH','donutH','ovH','ovHint','audH','audHint','deepH','deepHint','repH','repGeoH','repPlaceH','repFreqH','tagline'].forEach(k=>S(k,tt(k)));
+  ['defsH','defsHint','poolH','poolHint','trendH','legDaily','legCum','legIdeal','funnelH','donutH','ovH','ovHint','audH','audHint','deepH','deepHint','repH','repGeoH','repPlaceH','repFreqH','repByAge','repByGender','tagline'].forEach(k=>S(k,tt(k)));
   const dt=document.getElementById('defsTop');
   if(dt) dt.innerHTML=DEFS.map(x=>`<div class="def"><div class="de">${x.ic}</div><div><h4>${x[L].h}</h4><p>${x[L].p}</p></div></div>`).join('');
   document.documentElement.lang=L;
@@ -791,6 +859,7 @@ function render(){
   renderAudience(rows);
   renderDeep(rows);
   renderReport();
+  renderAgeGender();
   renderCommentary(rows, act, {kReach,kTraffic,kAll});
 
   document.getElementById('trendHint').textContent = rows.length? range.label : tt('noData');
@@ -1156,6 +1225,27 @@ function drawFreqChart(wk){
     g+=`<text x="${x(i)}" y="${H-12}" text-anchor="middle" font-size="10" fill="#A39EA0">${weekLabel(w.week)}</text>`;});
   svg.setAttribute('viewBox',`0 0 ${W} ${H}`);
   svg.innerHTML=g;
+}
+/* Age + Gender: chỉ ĐỔ SỐ TRẦN từ pivot anh Hùng kéo (KHÔNG kèm nhận xét/insight) */
+function renderAgeGender(){
+  const ag = (typeof REPORT!=='undefined') ? REPORT.ageGender : null;
+  const wrap=document.getElementById('repAgeGenderWrap'), leg=document.getElementById('agLegend');
+  if(!wrap) return;
+  if(!ag || (!(ag.age||[]).length && !(ag.gender||[]).length)){
+    wrap.style.display='none'; if(leg) leg.style.display='none'; return;
+  }
+  wrap.style.display=''; if(leg){ leg.style.display=''; leg.textContent=tt('agLegend'); }
+  const head=c1=>`<thead><tr><th>${c1}</th><th>${tt('cImpr')}</th><th>%ER</th><th>%VR</th><th>CTR</th></tr></thead>`;
+  const tbl=(c1,list,grand)=>{
+    let h=head(c1)+'<tbody>';
+    (list||[]).forEach(e=>{ h+=`<tr><td>${e.label}</td><td>${fmtInt(e.impr)}</td>
+      <td>${fmtPct(e.er,2)}</td><td>${fmtPct(e.vr,3)}</td><td>${fmtPct(e.ctr,3)}</td></tr>`; });
+    if(grand) h+=`<tr class="grand"><td>${tt('agTotal')}</td><td>${fmtInt(grand.impr)}</td>
+      <td>${fmtPct(grand.er,2)}</td><td>${fmtPct(grand.vr,3)}</td><td>${fmtPct(grand.ctr,3)}</td></tr>`;
+    return h+'</tbody>';
+  };
+  document.getElementById('tblAge').innerHTML   = tbl(tt('agAge'),    ag.age,    ag.grand);
+  document.getElementById('tblGender').innerHTML= tbl(tt('agGender'), ag.gender, ag.grand);
 }
 function renderReportDonut(elId, entries, valFn, labFn){
   const el=document.getElementById(elId); if(!el) return;
