@@ -113,12 +113,14 @@ def load_pool(svc):
     for r in vals[1:]:
         if not r or not (r[0] or '').strip():
             continue
+        pmin, pmax = bd.parse_pool_range(r[1] if len(r) > 1 else '')
         rows.append({'name': r[0].strip(),
-                     'pool': bd.to_num(r[1]) if len(r) > 1 else 0,
+                     'poolMin': pmin, 'poolMax': pmax,
+                     'pool': (pmin + pmax) / 2 if pmax else pmin,
                      'reach': bd.to_num(r[2]) if len(r) > 2 else 0})
     if not rows:
-        rows = [{'name': 'Mẹ có con 0–15 tuổi', 'pool': 20250000, 'reach': 0},
-                {'name': 'Mẹ có con 0–2 tuổi', 'pool': 13800000, 'reach': 0}]
+        rows = [{'name': 'Phụ huynh có con 5–15 tuổi', 'poolMin': 7700000, 'poolMax': 9100000, 'pool': 8400000, 'reach': 0},
+                {'name': 'Phụ huynh có con 0–2 tuổi', 'poolMin': 7700000, 'poolMax': 9100000, 'pool': 8400000, 'reach': 0}]
     return rows
 
 
@@ -146,7 +148,9 @@ def load_report(svc):
     r5 = rd("'Raw Data Report (5)'!A1:J300")
     rweek = rd("'Freq by week'!A1:Z200")        # tab tần suất theo tuần (nếu có) → chart; thiếu tab thì []
     rag = rd_grid("'Age + Gender'!A1:Q40")      # pivot Age+Gender (nửa phải tab) → khối Age & Gender
-    return bd.aggregate_report(r3, r4, r5, rweek, rag)
+    # CHỈ đọc cột A:L (Campaign..Link post) — parse_posts KHÔNG lấy Spending; cột M+ (cost nội bộ) không đọc
+    rposts = rd_grid("'[INT] Dashboard Internal'!A1:L110")
+    return bd.aggregate_report(r3, r4, r5, rweek, rag, rposts)
 
 
 def main():

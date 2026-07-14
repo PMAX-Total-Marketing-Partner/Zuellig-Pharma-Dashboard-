@@ -122,6 +122,17 @@ def load_kpi():
     return list(agg.values())
 
 # ── Độ phủ tệp: đọc tab "Reach" (Audience | Pool | Unique Reach) ──────────────
+def parse_pool_range(s):
+    """Pool size có thể là số đơn ('14150000') hoặc dải Meta ('7,700,000 - 9,100,000').
+    Trả (min, max); số đơn thì min==max."""
+    s = str(s or '').strip()
+    for d in ('–', '—'):
+        s = s.replace(d, '-')
+    nums = [n for n in (to_num(p) for p in s.split('-')) if n > 0]
+    if not nums:
+        return (0.0, 0.0)
+    return (min(nums), max(nums))
+
 def load_pool():
     p = os.path.join(SHEET_DIR, 'Reach.csv')
     rows = []
@@ -131,12 +142,14 @@ def load_pool():
         for r in data[1:]:                      # bỏ header
             if not r or not (r[0] or '').strip():
                 continue
+            pmin, pmax = parse_pool_range(r[1] if len(r) > 1 else '')
             rows.append({'name': r[0].strip(),
-                         'pool': to_num(r[1]) if len(r) > 1 else 0,
+                         'poolMin': pmin, 'poolMax': pmax,
+                         'pool': (pmin + pmax) / 2 if pmax else pmin,   # điểm giữa dải → dùng tính %Reach
                          'reach': to_num(r[2]) if len(r) > 2 else 0})
     if not rows:                                # fallback nếu chưa tải tab Reach
-        rows = [{'name': 'Mẹ có con 0–15 tuổi', 'pool': 20250000, 'reach': 0},
-                {'name': 'Mẹ có con 0–2 tuổi', 'pool': 13800000, 'reach': 0}]
+        rows = [{'name': 'Phụ huynh có con 5–15 tuổi', 'poolMin': 7700000, 'poolMax': 9100000, 'pool': 8400000, 'reach': 0},
+                {'name': 'Phụ huynh có con 0–2 tuổi', 'poolMin': 7700000, 'poolMax': 9100000, 'pool': 8400000, 'reach': 0}]
     return rows
 
 # ── Meta Ads breakdown (Region / Placement / Age) ────────────────────────────
@@ -221,7 +234,33 @@ def parse_agegender(grid):
     return {'age': age_d, 'gender': gen_d, 'grand': age_gt or gen_gt}
 
 
-def aggregate_report(r3, r4, r5, rweek=None, rag=None):
+def parse_posts(grid):
+    """Bảng bài đăng — block trong tab '[INT] Dashboard Internal' có cột 'Link post'.
+    CHỈ lấy Campaign name / Impression / Engagement / Link post — TUYỆT ĐỐI không lấy
+    'Spending' (cost nội bộ) để không lộ lên dashboard công khai."""
+    if not grid:
+        return []
+    for i, row in enumerate(grid):
+        cols = {str(c).strip().lower(): j for j, c in enumerate(row) if str(c).strip()}
+        if 'link post' in cols and 'campaign name' in cols:
+            jc, jl = cols['campaign name'], cols['link post']
+            ji, je = cols.get('impression'), cols.get('engagement')
+            out = []
+            for r in grid[i + 1:]:
+                name = str(r[jc]).strip() if jc < len(r) else ''
+                if not name or name.lower().startswith(('grand', 'tổng')):
+                    break
+                out.append({
+                    'campaign': name,
+                    'impr': to_num(r[ji]) if ji is not None and ji < len(r) else 0,
+                    'eng':  to_num(r[je]) if je is not None and je < len(r) else 0,
+                    'link': str(r[jl]).strip() if jl < len(r) else '',
+                })
+            return out
+    return []
+
+
+def aggregate_report(r3, r4, r5, rweek=None, rag=None, rposts=None):
     def agg(rows, keycol):
         d = {}
         for r in rows:
@@ -251,6 +290,7 @@ def aggregate_report(r3, r4, r5, rweek=None, rag=None):
         'region': region, 'placement': placement, 'age': age,
         'weekly': parse_weekly(rweek),
         'ageGender': parse_agegender(rag),
+        'posts': parse_posts(rposts),
         'totals': {'impr': tot_impr, 'reachAge': reach_age, 'reachRegion': reach_region,
                    'eng': sum(a['eng'] for a in age), 'clk': sum(a['clk'] for a in age),
                    'freq': (tot_impr / reach_age) if reach_age else 0},
@@ -273,8 +313,9 @@ def load_report():
     return aggregate_report(rd('Raw_Data_Report_3.csv'),
                             rd('Raw_Data_Report_4.csv'),
                             rd('Raw_Data_Report_5.csv'),
-                            rd('Freq_by_week.csv'),      # tab 'Freq by week' (nếu có) → chart tần suất theo tuần
-                            rd_grid('Age_Gender.csv'))   # tab 'Age + Gender' pivot → khối Age & Gender
+                            rd('Freq_by_week.csv'),          # tab 'Freq by week' (nếu có) → chart tần suất theo tuần
+                            rd_grid('Age_Gender.csv'),       # tab 'Age + Gender' pivot → khối Age & Gender
+                            rd_grid('INT_Dashboard_Internal.csv'))  # block 'Link post' → bảng Bài đăng
 
 def main():
     paxy = load_paxy()
@@ -654,6 +695,13 @@ TEMPLATE = r'''<!doctype html>
       </div>
     </div>
     <div id="cmtReport"></div>
+    <div id="repPostsWrap" style="margin-top:16px">
+      <div class="card pad">
+        <div class="mini-h" id="repPostsH">Bài đăng đã chạy</div>
+        <div class="table-wrap"><table id="tblPosts"></table></div>
+        <div class="rep-note" id="repPostsNote"></div>
+      </div>
+    </div>
     <div class="grid2" id="repAgeGenderWrap" style="margin-top:16px">
       <div class="card pad">
         <div class="mini-h" id="repByAge">Theo độ tuổi</div>
@@ -699,13 +747,13 @@ const T = {
   title:'IMOJEV — Bảng đo hiệu suất Facebook', sub:'Zuellig Pharma · Chiến dịch IMOJEV · Flight', refresh:'Cập nhật', langBtn:'EN',
   rAll:'Cả chiến dịch', rL7d:'7 ngày gần nhất', rL14d:'14 ngày gần nhất', rMtd:'Tháng này (MTD)', rToday:'Ngày mới nhất',
   defsH:'Đọc nhanh 30 giây — các con số nghĩa là gì?', defsHint:'Giải thích đơn giản nhất',
-  poolH:'Độ phủ tệp mục tiêu — Reach / Pool size', poolHint:'Pool size cố định · Unique reach điền tay · %Reach tự tính',
+  poolH:'Độ phủ tệp mục tiêu — Reach / Pool size', poolHint:'Phạm vi Toàn Việt Nam · Pool = ước tính Meta · %Reach ≈ điểm giữa dải',
   trendH:'Diễn tiến theo ngày', legDaily:'Impression / ngày', legCum:'Impression luỹ kế', legIdeal:'Nhịp chuẩn (mục tiêu theo thời gian)',
   funnelH:'Hành trình người dùng — từ nhìn thấy đến bấm tìm hiểu', donutH:'Tỷ trọng tiếp cận theo nội dung', donutTotal:'Tổng tiếp cận',
   ovH:'Tổng quan — Objective × Asset', ovHint:'Mục tiêu = cho cả chiến dịch · Kết quả thực tế = số đã đạt tới thời điểm đang xem',
-  audH:'Audience × Creative', audHint:'Phân rã theo nhóm mẹ', deepH:'Deepdive — Pillar × Asset', deepHint:'%VR = View/Impression · %CTR = Click/Impression',
+  audH:'Audience × Creative', audHint:'Theo nhóm phụ huynh', deepH:'Deepdive — Pillar × Asset', deepHint:'%VR = View/Impression · %CTR = Click/Impression',
   tagline:'IMOJEV — Tiêm liều nhắc, chắc tương lai', noData:'chưa có dữ liệu',
-  kSpend:'Chi phí (Ext)', kImpr:'Lượt hiển thị', kEng:'Lượt tương tác', kView:'Lượt xem (Thruplay)', kClick:'Lượt bấm link',
+  kSpend:'Chi phí (Ext)', kImpr:'Lượt hiển thị', kEng:'Lượt tương tác', kView:'Lượt xem (Thruplay)', kClick:'Lượt bấm link', actualTag:'Thực tế (lũy kế)',
   target:'Mục tiêu', reached:'đạt', clickLater:'Nhánh kéo click chạy ở <b>giai đoạn sau</b>', soon:'Sắp khởi động',
   pAhead:'Vượt tiến độ ✓', pOn:'Đúng nhịp ✓', pSpeed:'Đang tăng tốc',
   flDay:'Flight: ngày', flTime:'thời gian đã trôi', flBudget:'ngân sách đã giải ngân', flOk:'Đúng/vượt nhịp', flOpt:'Đang tối ưu chi phí',
@@ -719,25 +767,26 @@ const T = {
   repFreqH:'Tần suất — mỗi người thấy mấy lần',
   repWinLead:'Số liệu Meta breakdown cho giai đoạn', repWinTail:'(ảnh chụp cố định) · phần còn lại của dashboard cập nhật realtime theo ngày.',
   repPeople:'người', repImpr:'lượt hiển thị', repReachSub:'người tiếp cận',
-  repGeoNote:'Hà Nội & TP.HCM là 2 đầu tàu tiếp cận; các tỉnh vệ tinh phủ bổ trợ. (Cột = số người tiếp cận / Reach.)',
+  repGeoNote:'Cột = số người tiếp cận (Reach) theo tỉnh · % = TỶ TRỌNG PHÂN BỔ theo tỉnh (KHÔNG phải %reach trên pool size).',
   repPlaceNote:'Reels gánh phần lớn lượt hiển thị (đẩy reach), Feed mang lại tương tác cao nhất. (Chia theo lượt hiển thị vì 1 người có thể thấy ở nhiều vị trí.)',
   repFreqNote:'Mỗi người tiếp cận nhìn thấy IMOJEV trung bình bằng đây lần. Tần suất còn thấp = đang phủ RỘNG người mới, chưa "bội thực" quảng cáo — còn nhiều dư địa nhắc lại ở giai đoạn sau.',
   repFreqUnit:'lần / người', freqOverall:'Tần suất trung bình',
   freqLeg:'Tần suất / tuần', freqChartCap:'Tần suất trung bình toàn kỳ',
   repByAge:'Theo độ tuổi', repByGender:'Theo giới tính', agAge:'Độ tuổi', agGender:'Giới tính', agTotal:'Tổng',
+  cPost:'Bài đăng', cPillar:'Chủ đề', repPostsH:'Bài đăng đã chạy', repPostsNote:'Bấm tên bài (↗) để mở post thật trên Facebook.',
   agLegend:'%ER = tỷ lệ tương tác · %VR = tỷ lệ xem · CTR = tỷ lệ bấm (đều tính trên tổng hiển thị)',
  },
  en:{
   title:'IMOJEV — Facebook Performance Dashboard', sub:'Zuellig Pharma · IMOJEV campaign · Flight', refresh:'Refresh', langBtn:'VI',
   rAll:'Whole campaign', rL7d:'Last 7 days', rL14d:'Last 14 days', rMtd:'This month (MTD)', rToday:'Latest day',
   defsH:'30-second read — what do the numbers mean?', defsHint:'Explained simply',
-  poolH:'Target pool coverage — Reach / Pool size', poolHint:'Pool size fixed · Unique reach entered manually · %Reach auto',
+  poolH:'Target pool coverage — Reach / Pool size', poolHint:'Scope: All Vietnam · Pool = Meta estimate · %Reach ≈ range midpoint',
   trendH:'Daily trend', legDaily:'Impressions / day', legCum:'Cumulative impressions', legIdeal:'Target pace (over time)',
   funnelH:'User journey — from seeing to clicking to learn more', donutH:'Reach share by content', donutTotal:'Total reach',
   ovH:'Overview — Objective × Asset', ovHint:'Target = whole campaign · Actual = delivered up to the viewed date',
-  audH:'Audience × Creative', audHint:'Broken down by mom segment', deepH:'Deepdive — Pillar × Asset', deepHint:'%VR = View/Impression · %CTR = Click/Impression',
+  audH:'Audience × Creative', audHint:'By parent group', deepH:'Deepdive — Pillar × Asset', deepHint:'%VR = View/Impression · %CTR = Click/Impression',
   tagline:'IMOJEV — A timely booster for a protected future', noData:'no data',
-  kSpend:'Spending (Ext)', kImpr:'Impression', kEng:'Engagement', kView:'View (Thruplay)', kClick:'Link Click',
+  kSpend:'Spending (Ext)', kImpr:'Impression', kEng:'Engagement', kView:'View (Thruplay)', kClick:'Link Click', actualTag:'Actual (cumulative)',
   target:'Target', reached:'reached', clickLater:'Click campaign starts in a <b>later phase</b>', soon:'Coming soon',
   pAhead:'Ahead of pace ✓', pOn:'On track ✓', pSpeed:'Ramping up',
   flDay:'Flight: day', flTime:'of time elapsed', flBudget:'of budget spent', flOk:'On/ahead of pace', flOpt:'Optimizing spend',
@@ -751,12 +800,13 @@ const T = {
   repFreqH:'Frequency — how many times each person saw it',
   repWinLead:'Meta breakdown for the period', repWinTail:'(fixed snapshot) · the rest of the dashboard updates daily in realtime.',
   repPeople:'people', repImpr:'impressions', repReachSub:'people reached',
-  repGeoNote:'Hanoi & HCMC are the two reach engines; satellite provinces add supporting coverage. (Bar = people reached / Reach.)',
+  repGeoNote:'Bar = people reached (Reach) by province · % = DISTRIBUTION SHARE by province (NOT %reach of pool size).',
   repPlaceNote:'Reels drives most impressions (pushing reach), Feed delivers the highest engagement. (Split by impressions since one person can be reached across placements.)',
   repFreqNote:'On average each reached person saw IMOJEV this many times. Low frequency = we are reaching BROAD new people, not over-serving ads — plenty of room to reinforce later.',
   repFreqUnit:'times / person', freqOverall:'Average frequency',
   freqLeg:'Frequency / week', freqChartCap:'Average frequency to date',
   repByAge:'By age', repByGender:'By gender', agAge:'Age', agGender:'Gender', agTotal:'Total',
+  cPost:'Post', cPillar:'Content pillar', repPostsH:'Posts that ran', repPostsNote:'Click a post name (↗) to open it on Facebook.',
   agLegend:'%ER = engagement rate · %VR = view rate · CTR = click-through rate (all of impressions)',
  }
 };
@@ -782,7 +832,7 @@ function applyStatic(){
   S('hTitle',tt('title')); S('hSub',tt('sub')); S('refreshTxt',tt('refresh')); S('langBtn',tt('langBtn'));
   const rs=document.getElementById('rangeSel'); const rm={all:'rAll',l7d:'rL7d',l14d:'rL14d',mtd:'rMtd',today:'rToday'};
   if(rs)[...rs.options].forEach(o=>{if(rm[o.value])o.textContent=tt(rm[o.value]);});
-  ['defsH','defsHint','poolH','poolHint','trendH','legDaily','legCum','legIdeal','funnelH','donutH','ovH','ovHint','audH','audHint','deepH','deepHint','repH','repGeoH','repPlaceH','repFreqH','repByAge','repByGender','tagline'].forEach(k=>S(k,tt(k)));
+  ['defsH','defsHint','poolH','poolHint','trendH','legDaily','legCum','legIdeal','funnelH','donutH','ovH','ovHint','audH','audHint','deepH','deepHint','repH','repGeoH','repPlaceH','repFreqH','repPostsH','repByAge','repByGender','tagline'].forEach(k=>S(k,tt(k)));
   const dt=document.getElementById('defsTop');
   if(dt) dt.innerHTML=DEFS.map(x=>`<div class="def"><div class="de">${x.ic}</div><div><h4>${x[L].h}</h4><p>${x[L].p}</p></div></div>`).join('');
   document.documentElement.lang=L;
@@ -863,6 +913,7 @@ function render(){
   renderAudience(rows);
   renderDeep(rows);
   renderReport();
+  renderPosts();
   renderAgeGender();
   renderCommentary(rows, act, {kReach,kTraffic,kAll});
 
@@ -885,18 +936,16 @@ function renderKpiCards(act, k){
   const cards = [
     {lab:tt('kSpend'), val:fmtVND(act.spend), unit:'đ', a:act.spend, kpi:k.kAll.budget, isMoney:true},
     {lab:tt('kImpr'),  val:fmtInt(act.impr),  unit:'', a:act.impr,  kpi:k.kReach.impr},
-    {lab:tt('kEng'),   val:fmtInt(act.eng),   unit:'', a:act.eng,   kpi:k.kAll.eng},
-    {lab:tt('kView'),  val:fmtInt(act.view),  unit:'', a:act.view,  kpi:k.kAll.view},
-    {lab:tt('kClick'), val:fmtInt(act.click), unit:'', a:act.click, kpi:k.kAll.click, later:!k.trafficStarted},
+    {lab:tt('kEng'),   val:fmtInt(act.eng),   unit:'', numberOnly:true},
+    {lab:tt('kView'),  val:fmtInt(act.view),  unit:'', numberOnly:true},
+    {lab:tt('kClick'), val:fmtInt(act.click), unit:'', numberOnly:true},
   ];
   document.getElementById('kpiCards').innerHTML = cards.map(c=>{
-    if(c.later){
+    if(c.numberOnly){   // chỉ hiện SỐ campaign đạt được, KHÔNG so target (tránh nhầm)
       return `<div class="card kpi">
         <div class="lab"><span class="ic"></span>${c.lab}</div>
         <div class="val">${c.val}<span class="unit"> ${c.unit}</span></div>
-        <div class="vs">${tt('clickLater')}</div>
-        <div class="bar"><i style="width:0%"></i></div>
-        <div class="pct"><span>&nbsp;</span><span style="color:var(--muted);font-weight:700">${tt('soon')}</span></div>
+        <div class="vs" style="color:var(--muted2)">${tt('actualTag')}</div>
       </div>`;
     }
     const p = c.kpi>0 ? clamp01(c.a/c.kpi) : 0;
@@ -986,7 +1035,7 @@ function achMini(a,kpi){
 function renderOverview(rows){
   const objs=['Reach','Traffic'];
   let html=`<thead><tr><th>${tt('cObjAsset')}</th>
-     <th>${tt('cBudget')}</th><th>${tt('cQty')}</th><th>${tt('cSpend')}</th><th>${tt('cImpr')}</th><th>${tt('cClick')}</th><th>${tt('cAchKpi')}</th></tr></thead><tbody>`;
+     <th>${tt('cBudget')}</th><th>${tt('cSpend')}</th><th>${tt('cImpr')}</th><th>${tt('cClick')}</th><th>${tt('cAchKpi')}</th></tr></thead><tbody>`;
   const g=groupBy(rows, r=>r.obj+'||'+r.asset);
   let G={spend:0,impr:0,click:0}, GK={budget:0};
   objs.forEach(obj=>{
@@ -996,7 +1045,7 @@ function renderOverview(rows){
     const oK   = kpiSum(k=>k.obj===obj);
     G.spend+=oAct.spend;G.impr+=oAct.impr;G.click+=oAct.click;GK.budget+=oK.budget;
     html+=`<tr class="obj-row"><td><span class="pill ${obj.toLowerCase()}">${obj}</span></td>
-       <td>${fmtVND(oK.budget)}</td><td>${fmtInt(oK.qty)}</td>
+       <td>${fmtVND(oK.budget)}</td>
        <td>${fmtVND(oAct.spend)}</td><td>${fmtInt(oAct.impr)}</td><td>${fmtInt(oAct.click)}</td>
        <td>${achMini(obj==='Reach'?oAct.impr:oAct.click, obj==='Reach'?oK.impr:oK.click)}</td></tr>`;
     assets.forEach(asset=>{
@@ -1005,13 +1054,13 @@ function renderOverview(rows){
       const kk=kpiSum(k=>k.obj===obj && k.asset===asset);
       const primaryA = obj==='Reach'?a.impr:a.click, primaryK = obj==='Reach'?kk.impr:kk.click;
       html+=`<tr><td class="sub-td">&nbsp;&nbsp;&nbsp;${asset}</td>
-        <td class="sub-td">${fmtVND(kk.budget)}</td><td class="sub-td">${fmtInt(kk.qty)}</td>
+        <td class="sub-td">${fmtVND(kk.budget)}</td>
         <td>${fmtVND(a.spend)}</td><td>${fmtInt(a.impr)}</td><td>${fmtInt(a.click)}</td>
         <td>${achMini(primaryA,primaryK)}</td></tr>`;
     });
   });
   const GKall=kpiSum(()=>true);
-  html+=`<tr class="grand"><td>${tt('cGrand')}</td><td>${fmtVND(GKall.budget)}</td><td>—</td>
+  html+=`<tr class="grand"><td>${tt('cGrand')}</td><td>${fmtVND(GKall.budget)}</td>
      <td>${fmtVND(G.spend)}</td><td>${fmtInt(G.impr)}</td><td>${fmtInt(G.click)}</td>
      <td>${fmtPct(GKall.budget>0?G.spend/GKall.budget:0)}</td></tr>`;
   html+='</tbody>';
@@ -1027,13 +1076,13 @@ function renderAudience(rows){
   const dispByKey={}; rows.forEach(r=>{const k=audKey(r.aud); if(k && !dispByKey[k]) dispByKey[k]=r.aud;});
   const auds = uniq(KPI.map(k=>k.aud)).filter(a=>a && !/0[-–]15/.test(a)).sort();
   let html=`<thead><tr><th>${tt('cAudAsset')}</th><th>${tt('cObj')}</th>
-     <th>${tt('cQty')}</th><th>${tt('cSpend')}</th><th>${tt('cImpr')}</th><th>${tt('cView')}</th><th>${tt('cClick')}</th><th>${tt('cAch')}</th></tr></thead><tbody>`;
+     <th>${tt('cSpend')}</th><th>${tt('cImpr')}</th><th>${tt('cView')}</th><th>${tt('cClick')}</th><th>${tt('cAch')}</th></tr></thead><tbody>`;
   auds.forEach(aud=>{
     const key=audKey(aud);
     const disp=dispByKey[key]||aud;
     const aAct=sumMetrics(rows.filter(r=>audKey(r.aud)===key));
     const aK=kpiSum(k=>audKey(k.aud)===key);
-    html+=`<tr class="obj-row"><td>${disp}</td><td></td><td>${fmtInt(aK.qty)}</td>
+    html+=`<tr class="obj-row"><td>${disp}</td><td></td>
       <td>${fmtVND(aAct.spend)}</td><td>${fmtInt(aAct.impr)}</td><td>${fmtInt(aAct.view)}</td><td>${fmtInt(aAct.click)}</td>
       <td>${achMini(aAct.impr, aK.impr)}</td></tr>`;
     // rows by obj+asset within audience that have KPI
@@ -1046,7 +1095,6 @@ function renderAudience(rows){
       const pa=obj==='Reach'?a.impr:a.click, pk=obj==='Reach'?kk.impr:kk.click;
       html+=`<tr><td class="sub-td">&nbsp;&nbsp;&nbsp;${asset}</td>
         <td><span class="pill ${obj.toLowerCase()}">${obj}</span></td>
-        <td class="sub-td">${fmtInt(kk.qty)}</td>
         <td>${fmtVND(a.spend)}</td><td>${fmtInt(a.impr)}</td><td>${fmtInt(a.view)}</td><td>${fmtInt(a.click)}</td>
         <td>${achMini(pa,pk)}</td></tr>`;
     });
@@ -1119,22 +1167,25 @@ function renderPool(){
   const R=52, C=2*Math.PI*R;
   el.innerHTML = (POOL_REACH||[]).map(p=>{
     const has=(+p.reach||0)>0;
+    const pMin=+p.poolMin||+p.pool||0, pMax=+p.poolMax||+p.pool||0, isRange=pMax>pMin;
+    const poolText = isRange ? `${fmtShort(pMin)} – ${fmtShort(pMax)}` : fmtInt(p.pool);
     const pct = p.pool>0 ? clamp01((+p.reach||0)/p.pool) : 0;
+    const pctText = has ? (isRange?'~':'')+fmtPct(pct,1) : '—';
     const len=pct*C;
     const ring = has ? `<circle cx="70" cy="70" r="52" fill="none" stroke="#6C8CC7" stroke-width="16" stroke-dasharray="${len} ${C-len}" transform="rotate(-90 70 70)" stroke-linecap="round"/>` : '';
-    const nm = L==='en' ? p.name.replace(/^(Mẹ|Phụ huynh) có con /,'Parents with kids ').replace(/ tuổi$/,' y.o.') : p.name;
+    const nm = L==='en' ? p.name.replace(/^(Mẹ|Phụ huynh) có con /,'Parents with kids ').replace(/ tuổi$/,' y.o.').replace(/^Toàn Việt Nam$/i,'All Vietnam') : p.name;
     return `<div class="card pad">
       <div class="mini-h">${nm}</div>
       <div class="donut-flex" style="align-items:center">
         <svg viewBox="0 0 140 140" width="130" height="130" style="flex:0 0 auto">
           <circle cx="70" cy="70" r="52" fill="none" stroke="#E7ECF5" stroke-width="16"/>${ring}
-          <text x="70" y="66" text-anchor="middle" font-size="23" font-weight="800" fill="#2E343A">${has?fmtPct(pct,1):'—'}</text>
+          <text x="70" y="66" text-anchor="middle" font-size="21" font-weight="800" fill="#2E343A">${pctText}</text>
           <text x="70" y="88" text-anchor="middle" font-size="11" fill="#6E7683">${tt('pctReach')}</text>
         </svg>
         <div style="font-size:13px;line-height:2.1">
-          <div>${tt('poolSize')}: <b>${fmtInt(p.pool)}</b> ${tt('ppl')}</div>
+          <div>${tt('poolSize')}: <b>${poolText}</b> ${tt('ppl')}</div>
           <div>${tt('uReach')}: <b>${has?fmtInt(p.reach):tt('notFilled')}</b></div>
-          <div>${tt('pctReach')}: <b style="color:var(--zp-red)">${has?fmtPct(pct,1):'—'}</b></div>
+          <div>${tt('pctReach')}: <b style="color:var(--zp-red)">${pctText}</b></div>
         </div>
       </div>
       ${has?'':'<div class="fn-sub" style="margin-top:8px">'+tt('poolHintCard')+'</div>'}
@@ -1230,6 +1281,38 @@ function drawFreqChart(wk){
   svg.setAttribute('viewBox',`0 0 ${W} ${H}`);
   svg.innerHTML=g;
 }
+/* Bảng Bài đăng — tên asset bấm được → mở post thật trên FB (KHÔNG hiện cost) */
+function cleanFbLink(u){
+  u=String(u||'').trim();
+  if(!u) return '';
+  u=u.replace(/^https?:\/\/web\.facebook\.com/i,'https://www.facebook.com');
+  const qi=u.indexOf('?');
+  if(qi<0) return u;
+  const kept=u.slice(qi+1).split('&').filter(p=>p && !p.startsWith('__'));   // bỏ tracking __cft__/__tn__
+  return kept.length ? u.slice(0,qi)+'?'+kept.join('&') : u.slice(0,qi);
+}
+function renderPosts(){
+  const posts=(typeof REPORT!=='undefined')?REPORT.posts:null;
+  const wrap=document.getElementById('repPostsWrap');
+  if(!wrap) return;
+  if(!posts || !posts.length){ wrap.style.display='none'; return; }
+  wrap.style.display='';
+  const list=posts.slice().filter(p=>(+p.impr||0)>0).sort((a,b)=>b.impr-a.impr);
+  let h=`<thead><tr><th>${tt('cPost')}</th><th>${tt('cPillar')}</th><th>${tt('cImpr')}</th><th>${tt('kEng')}</th><th>%ER</th></tr></thead><tbody>`;
+  list.forEach(p=>{
+    const parts=String(p.campaign).split('_');
+    const pillar=parts[3]||'', asset=parts[4]||p.campaign;
+    const er=p.impr>0?p.eng/p.impr:0;
+    const link=cleanFbLink(p.link);
+    const nameCell=link ? `<a href="${link}" target="_blank" rel="noopener noreferrer">${asset} ↗</a>` : asset;
+    h+=`<tr><td>${nameCell}</td><td class="sub-td">${pillarVN(pillar)}</td>
+      <td>${fmtInt(p.impr)}</td><td>${fmtInt(p.eng)}</td><td>${fmtPct(er,2)}</td></tr>`;
+  });
+  h+='</tbody>';
+  document.getElementById('tblPosts').innerHTML=h;
+  document.getElementById('repPostsNote').textContent=tt('repPostsNote');
+}
+
 /* Age + Gender: chỉ ĐỔ SỐ TRẦN từ pivot anh Hùng kéo (KHÔNG kèm nhận xét/insight) */
 function renderAgeGender(){
   const ag = (typeof REPORT!=='undefined') ? REPORT.ageGender : null;
