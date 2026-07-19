@@ -618,6 +618,13 @@ TEMPLATE = r'''<!doctype html>
     <div class="card pad flight" id="flightStrip"></div>
   </div>
 
+  <!-- Tiến độ delivery: Kế hoạch (theo nhịp) vs Thực tế -->
+  <div class="section">
+    <div class="section-h"><div class="n">◷</div><h2 id="delivH">Tiến độ delivery — Kế hoạch vs Thực tế</h2>
+      <span class="hint" id="delivHint"></span></div>
+    <div class="card"><div class="table-wrap"><table id="tblDeliv"></table></div></div>
+  </div>
+
   <!-- Trend -->
   <div class="section">
     <div class="section-h"><div class="n">◔</div><h2 id="trendH">Diễn tiến theo ngày</h2>
@@ -760,6 +767,9 @@ const T = {
   fImpr:'Hiển thị', fEng:'Tương tác', fView:'Xem video', fClick:'Bấm link', fStart:'100% — điểm khởi đầu', fOf:'của lượt hiển thị', fKept:'giữ lại', fPrev:'so với bước trước',
   poolSize:'Pool size', uReach:'Unique reach', pctReach:'%Reach pool', notFilled:'chưa điền', poolHintCard:'→ Điền Unique Reach (từ Meta) để hiện %.', ppl:'người',
   cObjAsset:'Objective / Asset', cBudget:'KPI Budget', cQty:'KPI Qty', cSpend:'Actual Spend', cImpr:'Impression', cClick:'Click', cAchKpi:'Đạt (theo KPI)', cGrand:'GRAND TOTAL',
+  cBuy:'Cách mua', cUnit:'Đơn giá',
+  delivH:'Tiến độ delivery — Kế hoạch vs Thực tế', dBranch:'Nhánh', dMetric:'Chỉ tiêu', dGoal:'Mục tiêu cả CD', dPlan:'KH đến hôm nay', dActual:'Thực tế', dPace:'Tiến độ',
+  dPlanNote:'Kế hoạch đến hôm nay = mục tiêu × % thời gian flight (ngày {d}/{t}) · nhánh Traffic chạy giai đoạn sau',
   cAudAsset:'Audience / Asset', cObj:'Objective', cView:'View', cAch:'Đạt', cPillarAsset:'Pillar / Asset', cView15:'View 15s',
   nx:'Nhận xét', sumBadge:'✓ Chiến dịch đang chạy tốt', updatedAt:'Số liệu cập nhật lúc', liveSrc:'Nguồn LIVE từ Google Sheet · cập nhật lúc',
   repH:'Chân dung tiếp cận — từ báo cáo Meta Ads', repHint:'Ảnh chụp từ Meta Ads Manager',
@@ -793,6 +803,9 @@ const T = {
   fImpr:'Impressions', fEng:'Engagements', fView:'Video views', fClick:'Link clicks', fStart:'100% — starting point', fOf:'of impressions', fKept:'kept', fPrev:'vs previous step',
   poolSize:'Pool size', uReach:'Unique reach', pctReach:'%Reach of pool', notFilled:'not filled', poolHintCard:'→ Enter Unique Reach (from Meta) to show %.', ppl:'people',
   cObjAsset:'Objective / Asset', cBudget:'KPI Budget', cQty:'KPI Qty', cSpend:'Actual Spend', cImpr:'Impression', cClick:'Click', cAchKpi:'Achieved (vs KPI)', cGrand:'GRAND TOTAL',
+  cBuy:'Buying', cUnit:'Unit cost',
+  delivH:'Delivery pacing — Plan vs Actual', dBranch:'Branch', dMetric:'Metric', dGoal:'Whole-campaign goal', dPlan:'Plan to date', dActual:'Actual', dPace:'Pace',
+  dPlanNote:'Plan to date = goal × % of flight elapsed (day {d}/{t}) · Traffic branch starts in a later phase',
   cAudAsset:'Audience / Asset', cObj:'Objective', cView:'View', cAch:'Achieved', cPillarAsset:'Pillar / Asset', cView15:'View 15s',
   nx:'Comment', sumBadge:'✓ Campaign is on track', updatedAt:'Data updated at', liveSrc:'Source: LIVE from Google Sheet · updated at',
   repH:'Audience reached — from the Meta Ads report', repHint:'Snapshot from Meta Ads Manager',
@@ -832,7 +845,7 @@ function applyStatic(){
   S('hTitle',tt('title')); S('hSub',tt('sub')); S('refreshTxt',tt('refresh')); S('langBtn',tt('langBtn'));
   const rs=document.getElementById('rangeSel'); const rm={all:'rAll',l7d:'rL7d',l14d:'rL14d',mtd:'rMtd',today:'rToday'};
   if(rs)[...rs.options].forEach(o=>{if(rm[o.value])o.textContent=tt(rm[o.value]);});
-  ['defsH','defsHint','poolH','poolHint','trendH','legDaily','legCum','legIdeal','funnelH','donutH','ovH','ovHint','audH','audHint','deepH','deepHint','repH','repGeoH','repPlaceH','repFreqH','repPostsH','repByAge','repByGender','tagline'].forEach(k=>S(k,tt(k)));
+  ['defsH','defsHint','poolH','poolHint','delivH','trendH','legDaily','legCum','legIdeal','funnelH','donutH','ovH','ovHint','audH','audHint','deepH','deepHint','repH','repGeoH','repPlaceH','repFreqH','repPostsH','repByAge','repByGender','tagline'].forEach(k=>S(k,tt(k)));
   const dt=document.getElementById('defsTop');
   if(dt) dt.innerHTML=DEFS.map(x=>`<div class="def"><div class="de">${x.ic}</div><div><h4>${x[L].h}</h4><p>${x[L].p}</p></div></div>`).join('');
   document.documentElement.lang=L;
@@ -905,6 +918,7 @@ function render(){
   const trafficStarted = rows.some(r=>r.obj==='Traffic' && (r.impr>0||r.click>0));
   renderKpiCards(act, {kReach,kTraffic,kAll,trafficStarted});
   renderFlight(act, kAll);
+  renderDelivery({kReach,kTraffic,kAll});
   renderTrend(rows, kAll.impr/FLIGHT_TOTAL);
   renderFunnel(act);
   renderDonut(rows);
@@ -984,6 +998,40 @@ function renderFlight(act, kAll){
     <span class="chip ${onPace?'ok':''}">${onPace?tt('flOk'):tt('flOpt')}</span>`;
 }
 
+/* ---- Bảng tiến độ delivery: Kế hoạch theo nhịp (mục tiêu × %flight) vs Thực tế luỹ kế ---- */
+function renderDelivery(k){
+  const el=document.getElementById('tblDeliv'); if(!el) return;
+  const f=flightElapsed();
+  const S=(obj,fn)=>ROWS.filter(r=>r.obj===obj).reduce((s,r)=>s+fn(r),0);
+  const reachImpr=S('Reach',r=>r.impr), reachSpend=S('Reach',spendOf);
+  const trafficClick=S('Traffic',r=>r.click), trafficSpend=S('Traffic',spendOf);
+  const trafficLater = (trafficSpend+trafficClick)<=0;
+  function pace(actual, planned){
+    if(planned<=0) return `<span style="color:var(--muted)">—</span>`;
+    const ok=actual>=planned*0.95;
+    return `<span style="color:${ok?'var(--ok)':'var(--zp-red)'};font-weight:700">${ok?tt('pAhead'):tt('pSpeed')}</span>`;
+  }
+  const rows=[
+    {br:'Reach', metric:tt('kImpr'),  goal:k.kReach.impr,   plan:k.kReach.impr*f,   act:reachImpr,   money:false},
+    {br:'Reach', metric:tt('kSpend'), goal:k.kReach.budget, plan:k.kReach.budget*f, act:reachSpend,  money:true},
+    {br:'Traffic', metric:tt('kClick'), goal:k.kTraffic.click, plan:0, act:trafficClick, money:false, later:trafficLater},
+    {br:'Traffic', metric:tt('kSpend'), goal:k.kTraffic.budget, plan:0, act:trafficSpend, money:true, later:trafficLater},
+  ];
+  let html=`<thead><tr><th>${tt('dBranch')}</th><th>${tt('dMetric')}</th><th>${tt('dGoal')}</th><th>${tt('dPlan')}</th><th>${tt('dActual')}</th><th>${tt('dPace')}</th></tr></thead><tbody>`;
+  rows.forEach(r=>{
+    const fmt=r.money?fmtVND:fmtInt, u=r.money?'đ':'';
+    const planS=r.later?'—':fmt(r.plan)+u;
+    const paceS=r.later?`<span style="color:var(--muted);font-weight:700">${tt('soon')}</span>`:pace(r.act,r.plan);
+    html+=`<tr><td><span class="pill ${r.br.toLowerCase()}">${r.br}</span></td><td>${r.metric}</td>
+      <td>${fmt(r.goal)+u}</td><td>${planS}</td><td><b>${fmt(r.act)+u}</b></td><td>${paceS}</td></tr>`;
+  });
+  html+='</tbody>';
+  el.innerHTML=html;
+  const today=new Date().toISOString().slice(0,10);
+  const elapsed=Math.max(0,Math.min(FLIGHT_TOTAL,daysBetween(META.campaignStart, today>META.campaignEnd?META.campaignEnd:today)+1));
+  document.getElementById('delivHint').textContent = tt('dPlanNote').replace('{d}',elapsed).replace('{t}',FLIGHT_TOTAL);
+}
+
 /* ---- SVG trend chart (impression/ngày + luỹ kế) ---- */
 function renderTrend(rows, idealPerDay){
   const svg = document.getElementById('trendChart');
@@ -1034,7 +1082,7 @@ function achMini(a,kpi){
 }
 function renderOverview(rows){
   const objs=['Reach','Traffic'];
-  let html=`<thead><tr><th>${tt('cObjAsset')}</th>
+  let html=`<thead><tr><th>${tt('cObjAsset')}</th><th>${tt('cBuy')}</th><th>${tt('cUnit')}</th>
      <th>${tt('cBudget')}</th><th>${tt('cSpend')}</th><th>${tt('cImpr')}</th><th>${tt('cClick')}</th><th>${tt('cAchKpi')}</th></tr></thead><tbody>`;
   const g=groupBy(rows, r=>r.obj+'||'+r.asset);
   let G={spend:0,impr:0,click:0}, GK={budget:0};
@@ -1045,6 +1093,7 @@ function renderOverview(rows){
     const oK   = kpiSum(k=>k.obj===obj);
     G.spend+=oAct.spend;G.impr+=oAct.impr;G.click+=oAct.click;GK.budget+=oK.budget;
     html+=`<tr class="obj-row"><td><span class="pill ${obj.toLowerCase()}">${obj}</span></td>
+       <td>${obj==='Reach'?'CPM':'CPC'}</td><td>${obj==='Reach'?fmtVND(CPM)+'đ':fmtVND(CPC)+'đ'}</td>
        <td>${fmtVND(oK.budget)}</td>
        <td>${fmtVND(oAct.spend)}</td><td>${fmtInt(oAct.impr)}</td><td>${fmtInt(oAct.click)}</td>
        <td>${achMini(obj==='Reach'?oAct.impr:oAct.click, obj==='Reach'?oK.impr:oK.click)}</td></tr>`;
@@ -1054,13 +1103,14 @@ function renderOverview(rows){
       const kk=kpiSum(k=>k.obj===obj && k.asset===asset);
       const primaryA = obj==='Reach'?a.impr:a.click, primaryK = obj==='Reach'?kk.impr:kk.click;
       html+=`<tr><td class="sub-td">&nbsp;&nbsp;&nbsp;${asset}</td>
+        <td class="sub-td"></td><td class="sub-td"></td>
         <td class="sub-td">${fmtVND(kk.budget)}</td>
         <td>${fmtVND(a.spend)}</td><td>${fmtInt(a.impr)}</td><td>${fmtInt(a.click)}</td>
         <td>${achMini(primaryA,primaryK)}</td></tr>`;
     });
   });
   const GKall=kpiSum(()=>true);
-  html+=`<tr class="grand"><td>${tt('cGrand')}</td><td>${fmtVND(GKall.budget)}</td>
+  html+=`<tr class="grand"><td>${tt('cGrand')}</td><td></td><td></td><td>${fmtVND(GKall.budget)}</td>
      <td>${fmtVND(G.spend)}</td><td>${fmtInt(G.impr)}</td><td>${fmtInt(G.click)}</td>
      <td>${fmtPct(GKall.budget>0?G.spend/GKall.budget:0)}</td></tr>`;
   html+='</tbody>';
