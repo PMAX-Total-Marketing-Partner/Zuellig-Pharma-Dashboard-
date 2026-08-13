@@ -502,7 +502,7 @@ TEMPLATE = r'''<!doctype html>
   /* Section shells */
   .section{margin-top:26px}
   .section-h{display:flex;align-items:baseline;gap:12px;margin:0 2px 12px}
-  .section-h .n{width:26px;height:26px;flex:0 0 auto;border-radius:8px;background:var(--zp-ink);
+  .section-h .n{width:26px;height:26px;flex:0 0 auto;border-radius:8px;background:var(--brand-blue-deep);
        color:#fff;font-size:13px;font-weight:800;display:grid;place-items:center}
   .section-h h2{margin:0;font-size:16px;font-weight:800}
   .section-h .hint{color:var(--muted);font-size:12px;margin-left:auto;font-weight:500}
@@ -547,7 +547,7 @@ TEMPLATE = r'''<!doctype html>
   th:first-child,td:first-child{text-align:left}
   thead th{background:#faf9f9;color:var(--muted);font-size:11px;text-transform:uppercase;letter-spacing:.4px;font-weight:800;position:sticky;top:0}
   tbody tr.obj-row td{background:#EDF1FA;font-weight:800;color:var(--brand-blue-deep)}
-  tbody tr.grand td{background:var(--zp-ink);color:#fff;font-weight:800;border-bottom:0}
+  tbody tr.grand td{background:var(--brand-blue-deep);color:#fff;font-weight:800;border-bottom:0}
   tbody tr.grand td:first-child{border-radius:0 0 0 12px}
   tbody tr.grand td:last-child{border-radius:0 0 12px 0}
   td .mini{display:inline-flex;align-items:center;gap:8px;justify-content:flex-end}
