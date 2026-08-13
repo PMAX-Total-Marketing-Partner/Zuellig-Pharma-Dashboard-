@@ -73,6 +73,18 @@ def iso_date(s):
         except: return None
     return None
 
+def _to_date(v):
+    """Nhãn ngày trong pivot: chuỗi '6/1/2026' / '2026-06-01' (CSV local) HOẶC serial number
+    (Sheets API với UNFORMATTED_VALUE trả 46174) → 'YYYY-MM-DD'. Không phải ngày → None."""
+    try:
+        n = float(v)
+        if 40000 <= n <= 60000:
+            return (datetime.date(1899, 12, 30) + datetime.timedelta(days=int(n))).isoformat()
+    except (TypeError, ValueError):
+        pass
+    return iso_date(str(v or '').strip())
+
+
 # ── 1) FB_Paxy actual rows ───────────────────────────────────────────────────
 def load_paxy():
     rows = []
@@ -196,42 +208,62 @@ def parse_agegender(grid):
     Không hardcode dòng/cột → anh nới dải tuổi / xê pivot vẫn chạy."""
     if not grid:
         return None
+    def colmap(row, j):
+        """Map cột theo TÊN header (không theo vị trí cố định) → anh thêm/bớt cột vẫn chạy.
+        Cột 'Spending' bị BỎ QUA có chủ đích: cost nội bộ không được lên trang public."""
+        m, dates = {}, []
+        for k in range(j + 1, min(j + 10, len(row))):
+            h = str(row[k]).strip().lower()
+            if not h:
+                continue
+            if 'spend' in h or 'amount' in h:      # cost nội bộ → KHÔNG lấy
+                continue
+            elif 'impress' in h:                   m.setdefault('impr', k)
+            elif 'engagement' in h or 'eng' == h:  m.setdefault('eng', k)
+            elif 'view' in h:                      m.setdefault('view', k)
+            elif h in ('%er', 'er'):               m.setdefault('er', k)
+            elif h in ('%vr', 'vr'):               m.setdefault('vr', k)
+            elif h == 'ctr':                       m.setdefault('ctr', k)
+            elif _to_date(row[k]):                 dates.append(_to_date(row[k]))   # nhãn kỳ của pivot
+        return m, sorted(dates)
+
     def read_block(hdr):
         for row in grid:
             for j, cell in enumerate(row):
-                if (str(cell).strip().lower() == hdr.lower()
-                        and j + 1 < len(row) and 'impress' in str(row[j + 1]).lower()):
-                    out, started = [], False
-                    for r in grid:
-                        lab = str(r[j]).strip() if j < len(r) else ''
-                        if not started:
-                            started = (r is row)   # bắt đầu đọc từ SAU dòng header
-                            continue
-                        if not lab:
-                            if out: break
-                            continue
-                        out.append({
-                            'label': lab,
-                            'impr': to_num(r[j + 1] if j + 1 < len(r) else 0),
-                            'eng':  to_num(r[j + 2] if j + 2 < len(r) else 0),
-                            'view': to_num(r[j + 3] if j + 3 < len(r) else 0),
-                            'er':   to_num(r[j + 4] if j + 4 < len(r) else 0),
-                            'vr':   to_num(r[j + 5] if j + 5 < len(r) else 0),
-                            'ctr':  to_num(r[j + 6] if j + 6 < len(r) else 0),
-                        })
-                        if lab.lower().startswith(('grand', 'tổng')):
-                            break
-                    return out
-        return []
+                if str(cell).strip().lower() != hdr.lower():
+                    continue
+                m, dates = colmap(row, j)
+                # Phải là header PIVOT (nửa phải), KHÔNG phải header raw theo ngày ở nửa trái:
+                # raw chỉ có Impressions/Post Engagement, pivot mới có %ER/%VR/CTR/View15s.
+                if 'impr' not in m or not ({'er', 'vr', 'ctr', 'view'} & set(m)):
+                    continue
+                out, started = [], False
+                for r in grid:
+                    lab = str(r[j]).strip() if j < len(r) else ''
+                    if not started:
+                        started = (r is row)       # bắt đầu đọc từ SAU dòng header
+                        continue
+                    if not lab:
+                        if out: break
+                        continue
+                    out.append({'label': lab, **{k: to_num(r[c] if c < len(r) else 0)
+                                                 for k, c in m.items()}})
+                    if lab.lower().startswith(('grand', 'tổng')):
+                        break
+                return out, ({'start': dates[0], 'end': dates[-1]} if len(dates) >= 2 else None)
+        return [], None
     def split(lst):
         data = [e for e in lst if not e['label'].lower().startswith(('grand', 'tổng'))]
         gt = next((e for e in lst if e['label'].lower().startswith(('grand', 'tổng'))), None)
         return data, gt
-    age_d, age_gt = split(read_block('Age'))
-    gen_d, gen_gt = split(read_block('Gender'))
+    age_rows, age_period = read_block('Age')
+    gen_rows, gen_period = read_block('Gender')
+    age_d, age_gt = split(age_rows)
+    gen_d, gen_gt = split(gen_rows)
     if not age_d and not gen_d:
         return None
-    return {'age': age_d, 'gender': gen_d, 'grand': age_gt or gen_gt}
+    return {'age': age_d, 'gender': gen_d, 'grand': age_gt or gen_gt,
+            'period': age_period or gen_period}
 
 
 def parse_posts(grid):
@@ -260,7 +292,41 @@ def parse_posts(grid):
     return []
 
 
-def aggregate_report(r3, r4, r5, rweek=None, rag=None, rposts=None):
+def parse_region(rows):
+    """Tab 'Region' (2 cột: Region | Reach) — Meta đã DE-DUP người ở cấp campaign.
+    Đây là nguồn ĐÚNG cho Top tỉnh. Tab 'Raw Data Report (3)' là Ad set × Region:
+    cộng Reach theo tỉnh = đếm trùng 1 người ở nhiều ad set → chỉ dùng làm fallback."""
+    out = []
+    for r in rows or []:
+        name = (r.get('Region') or r.get('region') or '').strip()
+        if not name or name.lower().startswith(('grand', 'tổng', 'total')):
+            continue
+        out.append({'name': name, 'reach': to_num(r.get('Reach') or r.get('reach')),
+                    'impr': 0.0, 'eng': 0.0, 'tp': 0.0, 'clk': 0.0})
+    return sorted([o for o in out if o['reach'] > 0], key=lambda x: -x['reach'])
+
+
+def parse_reg7(rows):
+    """Tab 'Raw Data Report (7)' — Region-level (Meta de-dup), CHỈ dùng cột
+    Region/Reach/Impressions/Frequency + Reporting starts/ends.
+    KHÔNG đọc 'Amount spent'/'Cost per result' (cost nội bộ, không được lên trang public)."""
+    reach = impr = 0.0
+    starts, ends = [], []
+    for r in rows or []:
+        name = (r.get('Region') or '').strip()
+        if not name or name.lower().startswith(('grand', 'tổng', 'total')):
+            continue
+        reach += to_num(r.get('Reach'));  impr += to_num(r.get('Impressions'))
+        s = (r.get('Reporting starts') or '').strip(); e = (r.get('Reporting ends') or '').strip()
+        if s: starts.append(s)
+        if e: ends.append(e)
+    return {'reach': reach, 'impr': impr,
+            'freq': (impr / reach) if reach else 0,
+            'start': min(starts) if starts else None,
+            'end': max(ends) if ends else None}
+
+
+def aggregate_report(r3, r4, r5, rweek=None, rag=None, rposts=None, rregion=None, rreg7=None):
     def agg(rows, keycol):
         d = {}
         for r in rows:
@@ -278,22 +344,29 @@ def aggregate_report(r3, r4, r5, rweek=None, rag=None, rposts=None):
         e = [(r.get('Reporting ends')   or '').strip() for r in rows if (r.get('Reporting ends')   or '').strip()]
         return (min(s) if s else None, max(e) if e else None)
 
-    region    = agg(r3, 'Region')
+    region_dedup = parse_region(rregion)                 # nguồn ĐÚNG (tab 'Region')
+    region    = region_dedup or agg(r3, 'Region')        # fallback: bản cũ (đếm trùng ad set)
     placement = agg(r4, 'Placement')
     age       = agg(r5, 'Age')
     ws, we = window(r5 or r4 or r3)
+    reg7 = parse_reg7(rreg7)
     tot_impr    = sum(a['impr'] for a in placement) or sum(a['impr'] for a in age)
     reach_age   = sum(a['reach'] for a in age)      # tuổi loại trừ nhau → xấp xỉ unique reach
-    reach_region = sum(a['reach'] for a in region)  # tỉnh loại trừ nhau → xấp xỉ unique reach
+    reach_region = sum(a['reach'] for a in region)  # tỉnh loại trừ nhau → unique reach toàn quốc
+    # Tần suất: ưu tiên nguồn Region-level de-dup (tab 7). Bản cũ (Σimpr/Σreach của tab Age × Ad name)
+    # bị đếm trùng reach giữa các ad → freq THẤP GIẢ (1,14 thay vì ~1,7).
+    freq = reg7['freq'] or ((tot_impr / reach_age) if reach_age else 0)
     return {
         'window': {'start': ws, 'end': we},
+        'regionWindow': {'start': reg7['start'], 'end': reg7['end']},
         'region': region, 'placement': placement, 'age': age,
         'weekly': parse_weekly(rweek),
         'ageGender': parse_agegender(rag),
         'posts': parse_posts(rposts),
         'totals': {'impr': tot_impr, 'reachAge': reach_age, 'reachRegion': reach_region,
                    'eng': sum(a['eng'] for a in age), 'clk': sum(a['clk'] for a in age),
-                   'freq': (tot_impr / reach_age) if reach_age else 0},
+                   'freq': freq, 'freqSrc': 'region' if reg7['freq'] else 'age',
+                   'reachDedup': reg7['reach'], 'imprDedup': reg7['impr']},
         'hasData': bool(region or placement or age),
     }
 
@@ -315,7 +388,9 @@ def load_report():
                             rd('Raw_Data_Report_5.csv'),
                             rd('Freq_by_week.csv'),          # tab 'Freq by week' (nếu có) → chart tần suất theo tuần
                             rd_grid('Age_Gender.csv'),       # tab 'Age + Gender' pivot → khối Age & Gender
-                            rd_grid('INT_Dashboard_Internal.csv'))  # block 'Link post' → bảng Bài đăng
+                            rd_grid('INT_Dashboard_Internal.csv'),  # block 'Link post' → bảng Bài đăng
+                            rd('Region.csv'),                # tab 'Region' (de-dup) → Top tỉnh  ← nguồn ĐÚNG
+                            rd('Raw_Data_Report_7.csv'))     # tab (7) Region-level → tần suất de-dup + nhãn kỳ
 
 def main():
     paxy = load_paxy()
@@ -777,7 +852,8 @@ const T = {
   repFreqH:'Tần suất — mỗi người thấy mấy lần',
   repWinLead:'Số liệu Meta breakdown cho giai đoạn', repWinTail:'(ảnh chụp cố định) · phần còn lại của dashboard cập nhật realtime theo ngày.',
   repPeople:'người', repImpr:'lượt hiển thị', repReachSub:'người tiếp cận',
-  repGeoNote:'Cột = số người tiếp cận (Reach) theo tỉnh · % = TỶ TRỌNG PHÂN BỔ theo tỉnh (KHÔNG phải %reach trên pool size).',
+  repGeoNote:'Cột = số người tiếp cận (Reach) theo tỉnh · % = TỶ TRỌNG trên TỔNG reach toàn quốc (KHÔNG phải %reach trên pool size).',
+  repGeoUnit:'tỉnh/thành',
   repPlaceNote:'Reels gánh phần lớn lượt hiển thị (đẩy reach), Feed mang lại tương tác cao nhất. (Chia theo lượt hiển thị vì 1 người có thể thấy ở nhiều vị trí.)',
   repFreqNote:'Mỗi người tiếp cận nhìn thấy IMOJEV trung bình bằng đây lần. Tần suất còn thấp = đang phủ RỘNG người mới, chưa "bội thực" quảng cáo — còn nhiều dư địa nhắc lại ở giai đoạn sau.',
   repFreqUnit:'lần / người', freqOverall:'Tần suất trung bình',
@@ -813,7 +889,8 @@ const T = {
   repFreqH:'Frequency — how many times each person saw it',
   repWinLead:'Meta breakdown for the period', repWinTail:'(fixed snapshot) · the rest of the dashboard updates daily in realtime.',
   repPeople:'people', repImpr:'impressions', repReachSub:'people reached',
-  repGeoNote:'Bar = people reached (Reach) by province · % = DISTRIBUTION SHARE by province (NOT %reach of pool size).',
+  repGeoNote:'Bar = people reached (Reach) by province · % = SHARE OF TOTAL nationwide reach (NOT %reach of pool size).',
+  repGeoUnit:'provinces',
   repPlaceNote:'Reels drives most impressions (pushing reach), Feed delivers the highest engagement. (Split by impressions since one person can be reached across placements.)',
   repFreqNote:'On average each reached person saw IMOJEV this many times. Low frequency = we are reaching BROAD new people, not over-serving ads — plenty of room to reinforce later.',
   repFreqUnit:'times / person', freqOverall:'Average frequency',
@@ -1253,13 +1330,19 @@ function regionName(k){
   if(REGION_MAP[k]) return REGION_MAP[k][L];
   return String(k).replace(/\s*Provin(ce)?$/i,'').trim();   // bỏ đuôi "Province"
 }
-function hbar(items, valFn, labFn, green){
+/* total: tổng để tính % (vd tổng reach TOÀN QUỐC khi chỉ hiện top 5) — bỏ trống thì lấy tổng items.
+   Màu đậm→nhạt theo thứ hạng (vẫn trong dải brand blue) để phân biệt các cột. */
+const HBAR_RANK=[['#3F5DA3','#7E97CE'],['#4E6BAE','#93A9D6'],['#6C8CC7','#AFC0E2'],
+                 ['#89A1D2','#C2CEE9'],['#A6B8DE','#D5DDF1']];
+function hbar(items, valFn, labFn, green, total){
   const max=Math.max(...items.map(valFn),1);
-  const tot=items.reduce((s,x)=>s+valFn(x),0)||1;
-  return items.map(x=>{
+  const tot=total||items.reduce((s,x)=>s+valFn(x),0)||1;
+  return items.map((x,i)=>{
     const v=valFn(x), w=Math.max(3, v/max*100);
+    const c=HBAR_RANK[Math.min(i,HBAR_RANK.length-1)];
+    const bg=green?'':`;background:linear-gradient(90deg,${c[0]},${c[1]})`;
     return `<div class="hbar-row"><div class="hbar-lab" title="${labFn(x)}">${labFn(x)}</div>
-      <div class="hbar-track"><div class="hbar-fill${green?' g':''}" style="width:${w}%"></div></div>
+      <div class="hbar-track"><div class="hbar-fill${green?' g':''}" style="width:${w}%${bg}"></div></div>
       <div class="hbar-val">${fmtShort(v)} <small>${fmtPct(v/tot,0)}</small></div></div>`;
   }).join('');
 }
@@ -1273,10 +1356,16 @@ function renderReport(){
   document.getElementById('repWindow').innerHTML =
     `<span class="tag">📅 ${winTxt}</span><span style="font-size:12.5px;color:var(--muted)">${tt('repWinLead')} <b>${winTxt}</b> ${tt('repWinTail')}</span>`;
 
-  // A) Geo — theo Reach (số người, tỉnh loại trừ nhau)
-  const geo=(REPORT.region||[]).filter(x=>x.reach>0).slice(0,8);
-  document.getElementById('repGeo').innerHTML = hbar(geo, x=>x.reach, x=>regionName(x.name), false);
-  document.getElementById('repGeoNote').textContent = tt('repGeoNote');
+  // A) Geo — theo Reach (số người; nguồn tab 'Region' đã de-dup ở cấp campaign)
+  //    Chỉ hiện TOP 5, nhưng % tính trên tổng reach của TẤT CẢ tỉnh (không phải tổng 5 dòng).
+  const geoAll=(REPORT.region||[]).filter(x=>x.reach>0);
+  const geo=geoAll.slice(0,5);
+  const geoTot=(REPORT.totals&&REPORT.totals.reachRegion)||geoAll.reduce((s,x)=>s+x.reach,0);
+  document.getElementById('repGeo').innerHTML = hbar(geo, x=>x.reach, x=>regionName(x.name), false, geoTot);
+  const rw=REPORT.regionWindow||{};
+  const rwTxt=(rw.start&&rw.end)?` · ${vn(rw.start)} → ${vn(rw.end)}`:'';
+  document.getElementById('repGeoNote').textContent =
+    `${tt('repGeoNote')} · Top ${geo.length}/${geoAll.length} ${tt('repGeoUnit')}${rwTxt}`;
 
   // B) Placement — theo Impression (1 người thấy nhiều nơi → dùng impr, donut)
   renderReportDonut('repPlace', (REPORT.placement||[]).filter(x=>x.impr>0), x=>x.impr, x=>x.name);
@@ -1371,7 +1460,8 @@ function renderAgeGender(){
   if(!ag || (!(ag.age||[]).length && !(ag.gender||[]).length)){
     wrap.style.display='none'; if(leg) leg.style.display='none'; return;
   }
-  wrap.style.display=''; if(leg){ leg.style.display=''; leg.textContent=tt('agLegend'); }
+  const per=(ag.period&&ag.period.start&&ag.period.end)?` · 📅 ${vn(ag.period.start)} → ${vn(ag.period.end)}`:'';
+  wrap.style.display=''; if(leg){ leg.style.display=''; leg.textContent=tt('agLegend')+per; }
   const head=c1=>`<thead><tr><th>${c1}</th><th>${tt('cImpr')}</th><th>%ER</th><th>%VR</th><th>CTR</th></tr></thead>`;
   const tbl=(c1,list,grand)=>{
     let h=head(c1)+'<tbody>';

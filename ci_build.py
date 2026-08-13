@@ -40,6 +40,14 @@ SCOPES = ['https://www.googleapis.com/auth/spreadsheets.readonly']
 
 
 def creds_from_env():
+    # 1) Ưu tiên SERVICE ACCOUNT (secret GOOGLE_SA_KEY = nội dung file key .json) — KHÔNG hết hạn.
+    #    Chỉ cần share 2 sheet (EXT + INT) cho email service account là đọc được.
+    sa = os.environ.get('GOOGLE_SA_KEY')
+    if sa and sa.strip():
+        from google.oauth2 import service_account
+        creds = service_account.Credentials.from_service_account_info(json.loads(sa), scopes=SCOPES)
+        return creds
+    # 2) Fallback: OAuth user token (GOOGLE_TOKEN) — refresh token hết hạn 7 ngày nếu app còn Testing.
     tok = json.loads(os.environ['GOOGLE_TOKEN'])
     info = dict(tok)
     if not info.get('client_id') or not info.get('client_secret'):
@@ -147,10 +155,20 @@ def load_report(svc):
     r4 = rd("'Raw Data Report (4)'!A1:J300")
     r5 = rd("'Raw Data Report (5)'!A1:J300")
     rweek = rd("'Freq by week'!A1:Z200")        # tab tần suất theo tuần (nếu có) → chart; thiếu tab thì []
-    rag = rd_grid("'Age + Gender'!A1:Q40")      # pivot Age+Gender (nửa phải tab) → khối Age & Gender
+    # Pivot Age+Gender nằm ở nửa PHẢI tab (cột K trở đi), 2 block: cả kỳ (K:T) + riêng tháng (V:AC).
+    # parse_agegender lấy block đầu (cả kỳ) và BỎ cột 'Spending' → HTML không chứa cost.
+    rag = rd_grid("'Age + Gender'!A1:AD20")
     # CHỈ đọc cột A:L (Campaign..Link post) — parse_posts KHÔNG lấy Spending; cột M+ (cost nội bộ) không đọc
     rposts = rd_grid("'[INT] Dashboard Internal'!A1:L110")
-    return bd.aggregate_report(r3, r4, r5, rweek, rag, rposts)
+    # Top tỉnh: tab 'Region' (Region | Reach) — Meta đã de-dup người ở cấp campaign, KHÔNG có cột chi phí.
+    # (Tab 'Raw Data Report (3)' là Ad set × Region → cộng theo tỉnh bị ĐẾM TRÙNG, chỉ còn là fallback.)
+    rregion = rd("'Region'!A1:B100")
+    # Tần suất de-dup + nhãn kỳ: tab (7) Region-level — CHỈ cột A:F (Region..Frequency) và N:O (Reporting
+    # starts/ends). TUYỆT ĐỐI không đọc J/K (Amount spent / Cost per result) vì file này là PUBLIC.
+    r7a = rd("'Raw Data Report (7)'!A1:F100")
+    r7b = rd("'Raw Data Report (7)'!N1:O100")
+    rreg7 = [{**a, **b} for a, b in zip(r7a, r7b)] if r7b else r7a
+    return bd.aggregate_report(r3, r4, r5, rweek, rag, rposts, rregion, rreg7)
 
 
 def main():
